@@ -603,19 +603,30 @@
       last = now;
       t += dt;
 
-      analyze();
-      updateTransport();
+      // Wrapped so a single draw error can never permanently kill the loop,
+      // and guarded so we never touch the frequency buffers before audio init.
+      try {
+        if (analyser) {
+          analyze();
+          updateTransport();
 
-      const sens = parseFloat(sensitivityInput.value);
-      const trail = parseFloat(trailsInput.value);
-      const colorSpeed = parseFloat(colorSpeedInput.value);
+          const sens = parseFloat(sensitivityInput.value);
+          const trail = parseFloat(trailsInput.value);
+          const colorSpeed = parseFloat(colorSpeedInput.value);
 
-      hueBase += (colorSpeed * 12 + treble * 40 + beat * 30) * dt;
-      rot += (0.15 + bass * 1.2 + beat * 0.6) * dt;
+          hueBase += (colorSpeed * 12 + treble * 40 + beat * 30) * dt;
+          rot += (0.15 + bass * 1.2 + beat * 0.6) * dt;
 
-      fade(trail);
-      const fn = renderers[modeSel.value] || drawKaleido;
-      fn(sens);
+          fade(trail);
+          const fn = renderers[modeSel.value] || drawKaleido;
+          fn(sens);
+        } else {
+          // No audio loaded yet — keep the loop running without drawing.
+          fade(0.4);
+        }
+      } catch (err) {
+        console.error("render error:", err);
+      }
 
       requestAnimationFrame(frame);
     }
