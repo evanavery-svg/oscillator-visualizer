@@ -9,17 +9,14 @@ browser. No server, no upload, no dependencies.
 
 ## Use it
 
-Just open `index.html` in a modern browser (Chrome, Firefox, Edge, Safari).
+Just **double-click `index.html`** to open it in any modern browser (Chrome,
+Firefox, Edge, Safari) — no server needed. Then **drag an MP3 onto the page**
+(or click to choose a file).
 
-Or serve it locally so the audio API behaves consistently:
-
-```bash
-# any static server works, e.g.
-python3 -m http.server 8000
-# then visit http://localhost:8000
-```
-
-Then **drag an MP3 onto the page** (or click to choose a file).
+> The visualizer decodes the audio bytes directly with `decodeAudioData()`
+> rather than routing an `<audio crossorigin>` element through the Web Audio
+> graph. That avoids the cross-origin tainting that would otherwise feed the
+> analyser silence on a `file://` page (audible music, but a black screen).
 
 ## Visual modes
 
