@@ -500,7 +500,8 @@
           // a single clean line. Toward 1: precession + long trails build the
           // looping tangle.
           const motion = parseFloat(motionInput.value);
-          const react = parseFloat(reactInput.value);
+          // Halve the Audio range: the slider's full right is the old 50%.
+          const react = parseFloat(reactInput.value) * 0.5;
           // Steady spin; loudness only speeds it up as far as Audio allows.
           rot += (0.3 + energy * 1.8 * react) * slow * dt;
 
@@ -534,9 +535,19 @@
     }
     requestAnimationFrame(frame);
 
+    // Clamp a range input to its min/max while nudging it by delta.
+    function nudge(input, delta) {
+      const lo = parseFloat(input.min), hi = parseFloat(input.max);
+      input.value = String(Math.max(lo, Math.min(hi, parseFloat(input.value) + delta)));
+    }
     window.addEventListener("keydown", (e) => {
       if (e.code === "Space") { e.preventDefault(); togglePlay(); }
       else if (e.key === "f" || e.key === "F") fsBtn.click();
+      // Arrow keys: left/right = Shape, up/down = Audio.
+      else if (e.key === "ArrowRight") { e.preventDefault(); nudge(motionInput, 0.05); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); nudge(motionInput, -0.05); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); nudge(reactInput, 0.05); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); nudge(reactInput, -0.05); }
     });
   })();
   </script>
