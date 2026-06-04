@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Oscillator Visualizer — Psychedelic Audio Trip</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div id="dropHint" class="drop-hint">
+    <div class="drop-hint-inner">
+      <div class="logo">◎ OSCILLATOR</div>
+      <p>Drop an MP3 anywhere, or click to choose a file</p>
+      <p class="sub">Your audio never leaves this browser.</p>
+    </div>
+  </div>
+
+  <div id="ui" class="ui hidden">
+    <div class="now-playing" id="nowPlaying">—</div>
+
+    <div class="transport">
+      <button id="playBtn" class="icon-btn" title="Play / Pause" aria-label="Play or pause">▶</button>
+      <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" />
+      <span id="time" class="time">0:00 / 0:00</span>
+    </div>
+
+    <div class="controls">
+      <label class="ctl">
+        <span>Mode</span>
+        <select id="mode">
+          <option value="kaleido">Kaleidoscope</option>
+          <option value="tunnel">Warp Tunnel</option>
+          <option value="bloom">Spectral Bloom</option>
+          <option value="waves">Liquid Waves</option>
+        </select>
+      </label>
+      <label class="ctl">
+        <span>Sensitivity</span>
+        <input id="sensitivity" type="range" min="0.5" max="3" step="0.05" value="1.4" />
+      </label>
+      <label class="ctl">
+        <span>Trails</span>
+        <input id="trails" type="range" min="0.02" max="0.5" step="0.01" value="0.12" />
+      </label>
+      <label class="ctl">
+        <span>Color drift</span>
+        <input id="colorSpeed" type="range" min="0" max="3" step="0.05" value="1" />
+      </label>
+      <button id="newFileBtn" class="text-btn">Load another</button>
+      <button id="fsBtn" class="text-btn">Fullscreen</button>
+    </div>
+  </div>
+
+  <input id="fileInput" type="file" accept="audio/*,.mp3" hidden />
+  <audio id="audio" crossorigin="anonymous"></audio>
+
+  <script src="app.js"></script>
+</body>
+</html>
