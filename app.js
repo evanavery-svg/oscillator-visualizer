@@ -1,7 +1,16 @@
 /* Oscillator Visualizer
  * Client-side psychedelic audio visualizer.
- * Web Audio API drives a Canvas 2D renderer. Nothing is uploaded anywhere —
- * the File is read locally via an object URL.
+ *
+ * Audio engine: the dropped file is read as raw bytes and decoded with
+ * decodeAudioData() into an AudioBuffer, then played through an
+ * AudioBufferSourceNode -> AnalyserNode -> destination. We deliberately do NOT
+ * route an <audio> element through createMediaElementSource(), because a
+ * cross-origin / file:// resource makes that node emit silence to the graph
+ * (you'd hear audio but the analyser would read all zeros). Decoding the bytes
+ * directly has no cross-origin concept, so it works even when index.html is
+ * opened by double-clicking it (file://) with no local server.
+ *
+ * Nothing is uploaded anywhere — the file is read locally in the browser.
  */
 (() => {
   "use strict";
@@ -12,7 +21,6 @@
   const dropHint = document.getElementById("dropHint");
   const ui = document.getElementById("ui");
   const fileInput = document.getElementById("fileInput");
-  const audio = document.getElementById("audio");
   const playBtn = document.getElementById("playBtn");
   const seek = document.getElementById("seek");
   const timeLabel = document.getElementById("time");
@@ -24,38 +32,105 @@
   const newFileBtn = document.getElementById("newFileBtn");
   const fsBtn = document.getElementById("fsBtn");
 
-  // ---- Audio graph (created lazily on first user gesture) ----
+  // ---- Audio graph ----
   let audioCtx = null;
   let analyser = null;
-  let freqData = null; // Uint8Array of frequency magnitudes
-  let timeData = null; // Uint8Array of waveform
-  let currentUrl = null;
+  let freqData = null; // Uint8Array frequency magnitudes
+  let timeData = null; // Uint8Array waveform
+
+  // ---- Playback state (managed manually on top of a buffer source) ----
+  let audioBuffer = null;
+  let sourceNode = null;
+  let isPlaying = false;
+  let startedAt = 0; // audioCtx.currentTime when the current source started
+  let pausedAt = 0;  // playback offset in seconds
 
   function initAudio() {
     if (audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const src = audioCtx.createMediaElementSource(audio);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.82;
-    src.connect(analyser);
     analyser.connect(audioCtx.destination);
     freqData = new Uint8Array(analyser.frequencyBinCount);
     timeData = new Uint8Array(analyser.fftSize);
   }
 
+  const duration = () => (audioBuffer ? audioBuffer.duration : 0);
+
+  function currentTime() {
+    if (!audioBuffer) return 0;
+    const tNow = isPlaying ? pausedAt + (audioCtx.currentTime - startedAt) : pausedAt;
+    return Math.max(0, Math.min(tNow, duration()));
+  }
+
+  function stopSource() {
+    if (sourceNode) {
+      sourceNode.onended = null; // ignore the ended event from a manual stop
+      try { sourceNode.stop(); } catch (_) {}
+      try { sourceNode.disconnect(); } catch (_) {}
+      sourceNode = null;
+    }
+  }
+
+  function startPlayback(offset) {
+    if (!audioBuffer) return;
+    if (offset >= duration()) offset = 0;
+    stopSource();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+
+    sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    sourceNode.connect(analyser);
+    sourceNode.onended = () => {
+      // Fires only on natural end (manual stops null this handler first).
+      isPlaying = false;
+      pausedAt = duration();
+      playBtn.textContent = "▶";
+    };
+    sourceNode.start(0, offset);
+    startedAt = audioCtx.currentTime;
+    pausedAt = offset;
+    isPlaying = true;
+    playBtn.textContent = "❚❚";
+  }
+
+  function pausePlayback() {
+    if (!isPlaying) return;
+    pausedAt = currentTime();
+    stopSource();
+    isPlaying = false;
+    playBtn.textContent = "▶";
+  }
+
+  function togglePlay() {
+    if (!audioBuffer) { fileInput.click(); return; }
+    if (isPlaying) pausePlayback();
+    else startPlayback(pausedAt >= duration() ? 0 : pausedAt);
+  }
+
   // ---- File loading ----
-  function loadFile(file) {
+  async function loadFile(file) {
     if (!file) return;
     initAudio();
-    if (currentUrl) URL.revokeObjectURL(currentUrl);
-    currentUrl = URL.createObjectURL(file);
-    audio.src = currentUrl;
-    nowPlaying.textContent = "♪  " + file.name;
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+
+    nowPlaying.textContent = "Decoding…  " + file.name;
     dropHint.classList.add("hidden");
     ui.classList.remove("hidden");
-    audio.play().then(() => { if (audioCtx.state === "suspended") audioCtx.resume(); })
-      .catch(() => {/* user can press play */});
+
+    try {
+      const arrayBuf = await file.arrayBuffer();
+      const decoded = await audioCtx.decodeAudioData(arrayBuf);
+      stopSource();
+      audioBuffer = decoded;
+      pausedAt = 0;
+      nowPlaying.textContent = "♪  " + file.name;
+      startPlayback(0);
+    } catch (err) {
+      nowPlaying.textContent = "⚠ Couldn't decode “" + file.name + "” — try a standard MP3/WAV/OGG.";
+      console.error("decodeAudioData failed:", err);
+    }
   }
 
   fileInput.addEventListener("change", (e) => loadFile(e.target.files[0]));
@@ -81,32 +156,31 @@
   });
 
   // ---- Transport ----
-  playBtn.addEventListener("click", () => {
-    if (!audio.src) { fileInput.click(); return; }
-    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
-    if (audio.paused) audio.play(); else audio.pause();
-  });
-  audio.addEventListener("play", () => { playBtn.textContent = "❚❚"; });
-  audio.addEventListener("pause", () => { playBtn.textContent = "▶"; });
+  playBtn.addEventListener("click", togglePlay);
 
-  function fmt(t) {
-    if (!isFinite(t)) return "0:00";
-    const m = Math.floor(t / 60);
-    const s = Math.floor(t % 60);
-    return m + ":" + String(s).padStart(2, "0");
+  function fmt(s) {
+    if (!isFinite(s)) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return m + ":" + String(sec).padStart(2, "0");
   }
-  audio.addEventListener("timeupdate", () => {
-    if (audio.duration) {
-      if (!seeking) seek.value = String((audio.currentTime / audio.duration) * 1000);
-      timeLabel.textContent = fmt(audio.currentTime) + " / " + fmt(audio.duration);
-    }
-  });
+
   let seeking = false;
   seek.addEventListener("input", () => { seeking = true; });
   seek.addEventListener("change", () => {
-    if (audio.duration) audio.currentTime = (seek.value / 1000) * audio.duration;
+    const target = (seek.value / 1000) * duration();
+    if (isPlaying) startPlayback(target);
+    else { pausedAt = target; }
     seeking = false;
   });
+
+  function updateTransport() {
+    const d = duration();
+    if (d) {
+      if (!seeking) seek.value = String((currentTime() / d) * 1000);
+      timeLabel.textContent = fmt(currentTime()) + " / " + fmt(d);
+    }
+  }
 
   fsBtn.addEventListener("click", () => {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();
@@ -120,7 +194,7 @@
     document.body.style.cursor = "default";
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      if (!audio.paused) {
+      if (isPlaying) {
         ui.classList.add("idle");
         document.body.style.cursor = "none";
       }
@@ -146,9 +220,8 @@
   resize();
 
   // ---- Audio feature extraction ----
-  // Smoothed energy in three bands plus an overall beat detector.
   let bass = 0, mid = 0, treble = 0, energy = 0;
-  let beat = 0; // decays after each detected onset
+  let beat = 0;
   let energyAvg = 0;
 
   function analyze() {
@@ -167,14 +240,12 @@
     m /= ((midEnd - bassEnd) * 255);
     t /= ((n - midEnd) * 255);
 
-    // smooth
     bass += (b - bass) * 0.35;
     mid += (m - mid) * 0.35;
     treble += (t - treble) * 0.4;
     const e = bass * 1.4 + mid + treble * 0.7;
     energy += (e - energy) * 0.3;
 
-    // simple beat detection on bass energy
     energyAvg += (bass - energyAvg) * 0.04;
     if (bass > energyAvg * 1.35 && bass > 0.18) beat = 1;
     beat *= 0.90;
@@ -191,7 +262,7 @@
   let rot = 0;
 
   function fade(alpha) {
-    // Translucent black overlay -> motion trails
+    ctx.globalCompositeOperation = "source-over";
     ctx.fillStyle = `rgba(5, 5, 10, ${alpha})`;
     ctx.fillRect(0, 0, W, H);
   }
@@ -222,7 +293,6 @@
       ctx.stroke();
       ctx.restore();
     }
-    // pulsing core
     const cr = (0.04 + bass * 0.22) * Math.min(W, H);
     const g = ctx.createRadialGradient(0, 0, 0, 0, 0, cr);
     g.addColorStop(0, hsl(hueBase + 60, 100, 70, 0.9));
@@ -276,7 +346,7 @@
     for (let i = 0; i < petals; i++) {
       const idx = Math.floor((i / petals) * n);
       const v = (freqData[idx] / 255) * sens;
-      const a = (i / petals) * Math.PI * 2 * 5; // spiral
+      const a = (i / petals) * Math.PI * 2 * 5;
       const rad = base + i * (Math.min(W, H) * 0.0016) + v * Math.min(W, H) * 0.28;
       const x = Math.cos(a) * rad;
       const y = Math.sin(a) * rad;
@@ -328,6 +398,7 @@
     t += dt;
 
     analyze();
+    updateTransport();
 
     const sens = parseFloat(sensitivityInput.value);
     const trail = parseFloat(trailsInput.value);
@@ -346,7 +417,7 @@
 
   // Keyboard: space = play/pause, F = fullscreen
   window.addEventListener("keydown", (e) => {
-    if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
+    if (e.code === "Space") { e.preventDefault(); togglePlay(); }
     else if (e.key === "f" || e.key === "F") fsBtn.click();
   });
 })();
