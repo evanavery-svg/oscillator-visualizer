@@ -352,14 +352,10 @@
     let nextEvent = 0;      // time of the next random pace change
     let breathe = 1;        // breathing zoom
 
-    function drawScope(sens, energy, flicker, motion) {
+    function drawScope(sens, energy, flicker) {
       const n = scopeL.length;
       // The figure swells with the music (energy) on top of the size slider.
       const baseScale = Math.min(W, H) * 0.40 * sens * (0.85 + energy * 1.4);
-
-      // Fewer samples at low motion -> a short, clean single sweep; the full
-      // buffer at high motion -> the dense, busy figure.
-      const count = Math.max(64, Math.floor(n * (0.18 + 0.82 * motion)));
 
       // Mono fallback: offset Y by a short phase delay so it still loops.
       let diff = 0;
@@ -368,7 +364,7 @@
       const delay = Math.floor(n * 0.012);
 
       const path = new Path2D();
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < n; i++) {
         const x = scopeL[i] * baseScale;
         const y = (stereo ? scopeR[i] : scopeL[(i + delay) % n]) * baseScale;
         if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
@@ -439,9 +435,10 @@
           breathe = 1 + energy * 0.6 * motion + 0.03 * Math.sin(t * 0.4);
 
           const sens = parseFloat(sensitivityInput.value);
-          // Motion sets persistence too: high fade alpha (short trail) at 0,
-          // long trails near 1.
-          const trail = 0.6 - 0.57 * motion;
+          // Motion sets the trail: at 0 the screen clears fully each frame so
+          // it's a single crisp line drawing live shapes; toward 1 the trail
+          // lingers and stacks into the looping tangle (the "normal" scope).
+          const trail = 1 - 0.97 * motion;
 
           // Phosphor fade: translucent black over the previous frame.
           ctx.globalCompositeOperation = "source-over";
@@ -450,7 +447,7 @@
 
           // Subtle analog brightness flicker.
           const flicker = 0.9 + 0.1 * Math.sin(t * 7.3 + Math.sin(t * 2.1) * 2);
-          drawScope(sens, energy, flicker, motion);
+          drawScope(sens, energy, flicker);
         } else {
           ctx.fillStyle = "rgba(0,0,0,0.3)";
           ctx.fillRect(0, 0, W, H);
