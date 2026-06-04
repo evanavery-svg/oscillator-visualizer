@@ -352,6 +352,27 @@
     let twist = 0;          // amplitude-dependent swirl
     let breathe = 1;        // breathing zoom
 
+    // Faint, fixed oscilloscope graticule (measurement grid) drawn behind the
+    // trace in screen space — it stays put while the trace moves over it.
+    function drawGrid() {
+      const cell = Math.min(W, H) / 10;
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineWidth = 1 * DPR;
+      ctx.strokeStyle = "rgba(0, 255, 100, 0.05)";
+      ctx.beginPath();
+      for (let x = (W / 2) % cell; x <= W; x += cell) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+      for (let y = (H / 2) % cell; y <= H; y += cell) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+      ctx.stroke();
+      // Brighter center cross-hairs.
+      ctx.strokeStyle = "rgba(0, 255, 100, 0.13)";
+      ctx.beginPath();
+      ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H);
+      ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     function drawScope(sens, flicker) {
       const n = scopeL.length;
       const scale = Math.min(W, H) * 0.42;
@@ -426,6 +447,8 @@
           ctx.globalCompositeOperation = "source-over";
           ctx.fillStyle = "rgba(0, 0, 0, " + trail + ")";
           ctx.fillRect(0, 0, W, H);
+
+          drawGrid();
 
           // Subtle analog brightness flicker.
           const flicker = 0.92 + 0.08 * Math.sin(t * 7.3 + Math.sin(t * 2.1) * 2);
