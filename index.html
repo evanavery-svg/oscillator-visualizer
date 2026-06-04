@@ -357,16 +357,17 @@
       // The figure swells with the music (energy) on top of the size slider.
       const baseScale = Math.min(W, H) * 0.40 * sens * (0.85 + energy * 1.4);
 
-      // Mono fallback: offset Y by a short phase delay so it still loops.
-      let diff = 0;
-      for (let i = 0; i < n; i += 64) diff += Math.abs(scopeL[i] - scopeR[i]);
-      const stereo = diff > 0.02;
-      const delay = Math.floor(n * 0.012);
-
+      // Plot each sample against a phase-delayed copy of the signal (a
+      // phase-space plot). Unlike a plain left-vs-right plot — which collapses
+      // to a diagonal for center-mixed tracks — this turns ANY song into
+      // looping Lissajous shapes. X leans on the left channel, Y on a delayed
+      // mono sum, so real stereo content still adds character.
+      const delay = 64;
       const path = new Path2D();
       for (let i = 0; i < n; i++) {
+        const j = (i + delay) % n;
         const x = scopeL[i] * baseScale;
-        const y = (stereo ? scopeR[i] : scopeL[(i + delay) % n]) * baseScale;
+        const y = ((scopeL[j] + scopeR[j]) * 0.5) * baseScale;
         if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
       }
 
@@ -431,7 +432,9 @@
           // a single clean line. Toward 1: precession + long trails build the
           // looping tangle.
           const motion = parseFloat(motionInput.value);
-          rot += (0.12 + energy * 4.5) * slow * dt * motion;
+          // Gentle base rotation always (so the single line slowly turns and
+          // makes evolving shapes), plus loudness-driven precession on top.
+          rot += (0.12 + (0.12 + energy * 4.5) * slow * motion) * dt;
           breathe = 1 + energy * 0.6 * motion + 0.03 * Math.sin(t * 0.4);
 
           const sens = parseFloat(sensitivityInput.value);
