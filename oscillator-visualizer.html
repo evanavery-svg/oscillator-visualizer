@@ -3,33 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Oscillator Visualizer — Psychedelic Audio Trip</title>
+  <title>Oscilloscope</title>
   <style>
-    :root {
-      --bg: #05050a;
-      --fg: #e9e6ff;
-      --accent: #b388ff;
-      --panel: rgba(14, 12, 28, 0.62);
-      --border: rgba(179, 136, 255, 0.25);
-    }
     * { box-sizing: border-box; }
     html, body {
       margin: 0;
       height: 100%;
       overflow: hidden;
-      background: var(--bg);
-      color: var(--fg);
+      background: #000;
+      color: #4dff88;
       font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
       user-select: none;
     }
-    #stage {
-      position: fixed;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
+    #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     .hidden { display: none !important; }
+
     .drop-hint {
       position: fixed;
       inset: 0;
@@ -39,140 +27,87 @@
       text-align: center;
       cursor: pointer;
       z-index: 10;
-      transition: background 0.2s ease;
-    }
-    .drop-hint.dragover {
-      background: radial-gradient(circle at center, rgba(179,136,255,0.18), transparent 70%);
     }
     .drop-hint-inner { pointer-events: none; }
     .logo {
-      font-size: clamp(2rem, 7vw, 4.5rem);
-      font-weight: 800;
-      letter-spacing: 0.15em;
-      background: linear-gradient(90deg, #ff6ec7, #b388ff, #6ec6ff, #6effd0);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-      margin-bottom: 1.2rem;
-      animation: hue 8s linear infinite;
+      font-size: clamp(1.6rem, 6vw, 3.6rem);
+      font-weight: 700;
+      letter-spacing: 0.35em;
+      color: #4dff88;
+      text-shadow: 0 0 18px rgba(77, 255, 136, 0.7);
+      margin-bottom: 1rem;
     }
-    @keyframes hue { to { filter: hue-rotate(360deg); } }
-    .drop-hint p { font-size: 1.1rem; opacity: 0.85; margin: 0.3rem 0; }
-    .drop-hint .sub { font-size: 0.85rem; opacity: 0.5; }
+    .drop-hint p { font-size: 1rem; opacity: 0.7; margin: 0.3rem 0; }
+    .drop-hint .sub { font-size: 0.8rem; opacity: 0.4; }
+
     .ui {
       position: fixed;
       left: 50%;
       bottom: 22px;
       transform: translateX(-50%);
-      width: min(880px, calc(100% - 32px));
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 14px 18px;
-      backdrop-filter: blur(14px);
-      -webkit-backdrop-filter: blur(14px);
+      width: min(620px, calc(100% - 32px));
+      background: rgba(0, 12, 4, 0.6);
+      border: 1px solid rgba(77, 255, 136, 0.25);
+      border-radius: 14px;
+      padding: 12px 16px;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       z-index: 20;
-      box-shadow: 0 8px 40px rgba(0,0,0,0.5);
       transition: opacity 0.4s ease;
     }
     .ui.idle { opacity: 0; pointer-events: none; }
+
     .now-playing {
-      font-size: 0.9rem;
-      opacity: 0.8;
+      font-size: 0.85rem;
+      opacity: 0.75;
       margin-bottom: 10px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .transport {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
+    .transport { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
     .icon-btn {
       flex: 0 0 auto;
-      width: 42px;
-      height: 42px;
+      width: 40px; height: 40px;
       border-radius: 50%;
-      border: 1px solid var(--border);
-      background: rgba(179,136,255,0.12);
-      color: var(--fg);
-      font-size: 1rem;
+      border: 1px solid rgba(77, 255, 136, 0.4);
+      background: rgba(77, 255, 136, 0.1);
+      color: #4dff88;
+      font-size: 0.95rem;
       cursor: pointer;
-      transition: background 0.15s ease, transform 0.1s ease;
     }
-    .icon-btn:hover { background: rgba(179,136,255,0.28); }
-    .icon-btn:active { transform: scale(0.94); }
-    .time {
-      flex: 0 0 auto;
-      font-variant-numeric: tabular-nums;
-      font-size: 0.82rem;
-      opacity: 0.8;
-    }
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 14px 18px;
-    }
+    .icon-btn:hover { background: rgba(77, 255, 136, 0.22); }
+    .time { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-size: 0.8rem; opacity: 0.75; }
+
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 20px; }
     .ctl {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 0.72rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      opacity: 0.85;
-    }
-    .ctl select, .ctl input { cursor: pointer; }
-    select {
-      background: rgba(0,0,0,0.4);
-      color: var(--fg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 5px 8px;
-      font-size: 0.8rem;
+      display: flex; flex-direction: column; gap: 4px;
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.8;
     }
     input[type="range"] {
-      -webkit-appearance: none;
-      appearance: none;
-      height: 5px;
-      border-radius: 5px;
-      background: linear-gradient(90deg, #ff6ec7, #b388ff, #6ec6ff);
-      outline: none;
+      -webkit-appearance: none; appearance: none;
+      height: 4px; border-radius: 4px; background: rgba(77, 255, 136, 0.35); outline: none;
     }
     input[type="range"].seek { flex: 1 1 auto; }
     input[type="range"]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      background: #fff;
-      cursor: pointer;
-      box-shadow: 0 0 8px rgba(255,255,255,0.7);
+      -webkit-appearance: none; appearance: none;
+      width: 13px; height: 13px; border-radius: 50%;
+      background: #4dff88; cursor: pointer; box-shadow: 0 0 8px rgba(77, 255, 136, 0.9);
     }
     input[type="range"]::-moz-range-thumb {
-      width: 14px;
-      height: 14px;
-      border: none;
-      border-radius: 50%;
-      background: #fff;
-      cursor: pointer;
+      width: 13px; height: 13px; border: none; border-radius: 50%; background: #4dff88; cursor: pointer;
     }
     .text-btn {
       background: transparent;
-      border: 1px solid var(--border);
-      color: var(--fg);
+      border: 1px solid rgba(77, 255, 136, 0.3);
+      color: #4dff88;
       border-radius: 8px;
       padding: 7px 12px;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       cursor: pointer;
-      transition: background 0.15s ease;
-      margin-top: 14px;
+      margin-top: 12px;
     }
-    .text-btn:hover { background: rgba(179,136,255,0.18); }
+    .text-btn:hover { background: rgba(77, 255, 136, 0.15); }
   </style>
 </head>
 <body>
@@ -180,61 +115,27 @@
 
   <div id="dropHint" class="drop-hint">
     <div class="drop-hint-inner">
-      <div class="logo">◎ OSCILLATOR</div>
+      <div class="logo">OSCILLOSCOPE</div>
       <p>Drop an MP3 anywhere, or click to choose a file</p>
-      <p class="sub">Your audio never leaves this browser.</p>
+      <p class="sub">Stereo tracks draw the best figures. Audio stays in your browser.</p>
     </div>
   </div>
 
   <div id="ui" class="ui hidden">
     <div class="now-playing" id="nowPlaying">—</div>
-
     <div class="transport">
       <button id="playBtn" class="icon-btn" title="Play / Pause" aria-label="Play or pause">▶</button>
       <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" />
       <span id="time" class="time">0:00 / 0:00</span>
     </div>
-
     <div class="controls">
       <label class="ctl">
-        <span>Mode</span>
-        <select id="mode">
-          <option value="scope">Oscilloscope (X-Y)</option>
-          <option value="kaleido">Kaleidoscope</option>
-          <option value="geo">Geometric</option>
-          <option value="tunnel">Warp Tunnel</option>
-          <option value="bloom">Spectral Bloom</option>
-          <option value="waves">Liquid Waves</option>
-        </select>
-      </label>
-      <label class="ctl">
-        <span>Speed</span>
-        <input id="speed" type="range" min="0.1" max="3" step="0.05" value="1" />
-      </label>
-      <label class="ctl">
-        <span>Palette</span>
-        <select id="palette">
-          <option value="currents" selected>Currents (warm)</option>
-          <option value="phosphor">Phosphor (green)</option>
-          <option value="spectrum">Spectrum</option>
-          <option value="neon">Neon</option>
-          <option value="sunset">Sunset</option>
-          <option value="ocean">Ocean</option>
-          <option value="acid">Acid</option>
-          <option value="mono">Mono</option>
-        </select>
-      </label>
-      <label class="ctl">
         <span>Sensitivity</span>
-        <input id="sensitivity" type="range" min="0.5" max="3" step="0.05" value="1.4" />
+        <input id="sensitivity" type="range" min="0.3" max="2.5" step="0.05" value="1" />
       </label>
       <label class="ctl">
-        <span>Trails</span>
-        <input id="trails" type="range" min="0.02" max="0.5" step="0.01" value="0.12" />
-      </label>
-      <label class="ctl">
-        <span>Color drift</span>
-        <input id="colorSpeed" type="range" min="0" max="3" step="0.05" value="1" />
+        <span>Persistence</span>
+        <input id="trails" type="range" min="0.02" max="0.4" step="0.01" value="0.08" />
       </label>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
@@ -244,11 +145,10 @@
   <input id="fileInput" type="file" accept="audio/*,.mp3" hidden />
 
   <script>
-  /* Oscillator Visualizer — single-file build.
-   * Audio is decoded directly with decodeAudioData() into an
-   * AudioBufferSourceNode -> AnalyserNode -> destination. This avoids the
-   * cross-origin tainting that would feed the analyser silence on a file://
-   * page (audible music but a black screen). Nothing is uploaded anywhere.
+  /* Minimal X-Y oscilloscope.
+   * Left channel -> X, right channel -> Y, drawn as a glowing green trace on
+   * black with phosphor persistence (the Persistence slider controls how long
+   * the trail lingers). Audio is decoded locally; nothing is uploaded.
    */
   (() => {
     "use strict";
@@ -262,25 +162,16 @@
     const seek = document.getElementById("seek");
     const timeLabel = document.getElementById("time");
     const nowPlaying = document.getElementById("nowPlaying");
-    const modeSel = document.getElementById("mode");
-    const speedInput = document.getElementById("speed");
-    const paletteSel = document.getElementById("palette");
     const sensitivityInput = document.getElementById("sensitivity");
     const trailsInput = document.getElementById("trails");
-    const colorSpeedInput = document.getElementById("colorSpeed");
     const newFileBtn = document.getElementById("newFileBtn");
     const fsBtn = document.getElementById("fsBtn");
 
+    // ---- Audio ----
     let audioCtx = null;
-    let analyser = null;
-    let freqData = null;
-    let timeData = null;
-    // Per-channel analysers for the stereo X-Y oscilloscope (Lissajous).
     let splitter = null;
-    let analyserL = null;
-    let analyserR = null;
-    let scopeL = null;
-    let scopeR = null;
+    let analyserL = null, analyserR = null;
+    let scopeL = null, scopeR = null;
 
     let audioBuffer = null;
     let sourceNode = null;
@@ -291,14 +182,6 @@
     function initAudio() {
       if (audioCtx) return;
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 2048;
-      analyser.smoothingTimeConstant = 0.82;
-      analyser.connect(audioCtx.destination);
-      freqData = new Uint8Array(analyser.frequencyBinCount);
-      timeData = new Uint8Array(analyser.fftSize);
-
-      // Split L/R so the oscilloscope can plot left channel vs right channel.
       splitter = audioCtx.createChannelSplitter(2);
       analyserL = audioCtx.createAnalyser();
       analyserR = audioCtx.createAnalyser();
@@ -335,8 +218,8 @@
 
       sourceNode = audioCtx.createBufferSource();
       sourceNode.buffer = audioBuffer;
-      sourceNode.connect(analyser);
-      sourceNode.connect(splitter);
+      sourceNode.connect(audioCtx.destination); // sound
+      sourceNode.connect(splitter);             // scope data (L/R)
       sourceNode.onended = () => {
         isPlaying = false;
         pausedAt = duration();
@@ -391,18 +274,10 @@
     newFileBtn.addEventListener("click", () => fileInput.click());
 
     ["dragenter", "dragover"].forEach((ev) =>
-      window.addEventListener(ev, (e) => {
-        e.preventDefault();
-        if (!dropHint.classList.contains("hidden")) dropHint.classList.add("dragover");
-      })
-    );
-    ["dragleave", "drop"].forEach((ev) =>
-      window.addEventListener(ev, (e) => {
-        e.preventDefault();
-        dropHint.classList.remove("dragover");
-      })
+      window.addEventListener(ev, (e) => { e.preventDefault(); })
     );
     window.addEventListener("drop", (e) => {
+      e.preventDefault();
       const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (file) loadFile(file);
     });
@@ -444,15 +319,13 @@
       document.body.style.cursor = "default";
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
-        if (isPlaying) {
-          ui.classList.add("idle");
-          document.body.style.cursor = "none";
-        }
+        if (isPlaying) { ui.classList.add("idle"); document.body.style.cursor = "none"; }
       }, 3200);
     }
     window.addEventListener("mousemove", poke);
     window.addEventListener("touchstart", poke, { passive: true });
 
+    // ---- Canvas ----
     let W = 0, H = 0, DPR = 1;
     function resize() {
       DPR = Math.min(window.devicePixelRatio || 1, 2);
@@ -462,388 +335,66 @@
       canvas.height = H;
       canvas.style.width = window.innerWidth + "px";
       canvas.style.height = window.innerHeight + "px";
-      ctx.fillStyle = "#05050a";
+      ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
     }
     window.addEventListener("resize", resize);
     resize();
 
-    let bass = 0, mid = 0, treble = 0, energy = 0;
-    let beat = 0;
-    let energyAvg = 0;
-
-    function analyze() {
-      if (!analyser) return;
-      analyser.getByteFrequencyData(freqData);
-      analyser.getByteTimeDomainData(timeData);
-      if (analyserL) {
-        analyserL.getFloatTimeDomainData(scopeL);
-        analyserR.getFloatTimeDomainData(scopeR);
-      }
-      const n = freqData.length;
-      const bassEnd = Math.floor(n * 0.06);
-      const midEnd = Math.floor(n * 0.30);
-
-      let b = 0, m = 0, t = 0;
-      for (let i = 0; i < bassEnd; i++) b += freqData[i];
-      for (let i = bassEnd; i < midEnd; i++) m += freqData[i];
-      for (let i = midEnd; i < n; i++) t += freqData[i];
-      b /= (bassEnd * 255);
-      m /= ((midEnd - bassEnd) * 255);
-      t /= ((n - midEnd) * 255);
-
-      bass += (b - bass) * 0.35;
-      mid += (m - mid) * 0.35;
-      treble += (t - treble) * 0.4;
-      const e = bass * 1.4 + mid + treble * 0.7;
-      energy += (e - energy) * 0.3;
-
-      energyAvg += (bass - energyAvg) * 0.04;
-      if (bass > energyAvg * 1.35 && bass > 0.18) beat = 1;
-      beat *= 0.90;
-    }
-
-    function hsl(h, s, l, a) {
-      return `hsla(${((h % 360) + 360) % 360}, ${s}%, ${l}%, ${a == null ? 1 : a})`;
-    }
-
-    // Color palettes. `band` >= 360 means a continuously-rotating full
-    // spectrum; smaller bands keep the hue inside a themed slice of the wheel.
-    const PALS = {
-      currents: { base: 345, band: 90,  sat: 85,  spread: 0.8 }, // warm pink/orange/red
-      phosphor: { base: 110, band: 40,  sat: 100, spread: 0.6 }, // classic green scope
-      spectrum: { base: 0,   band: 360, sat: 90,  spread: 1.0 },
-      neon:     { base: 185, band: 150, sat: 100, spread: 1.2 },
-      sunset:   { base: 330, band: 110, sat: 95,  spread: 0.9 },
-      ocean:    { base: 150, band: 150, sat: 88,  spread: 1.0 },
-      acid:     { base: 70,  band: 190, sat: 100, spread: 1.5 },
-      mono:     { base: 265, band: 50,  sat: 65,  spread: 0.5 },
-    };
-    // Palette-aware color: `offset` shifts hue across elements, `light` is
-    // lightness %, `alpha` is opacity.
-    function col(offset, light, alpha) {
-      const p = PALS[paletteSel.value] || PALS.spectrum;
-      let hue;
-      if (p.band >= 360) {
-        hue = hueBase + offset;
-      } else {
-        const x = hueBase * 0.03 + offset * 0.02 * p.spread;
-        hue = p.base + p.band * (0.5 + 0.5 * Math.sin(x));
-      }
-      return hsl(hue, p.sat, light, alpha);
-    }
-
-    let hueBase = 200;
-    let t = 0;
-    let rot = 0;
-    let flow = 0;   // motion clock, advances with the Speed control
-    let flash = 0;  // screen-pulse intensity, spikes on each beat
-    let prevBeat = 0;
-    const sparks = []; // beat-triggered particle bursts
-
-    function fade(alpha) {
-      ctx.globalCompositeOperation = "source-over";
-      ctx.fillStyle = `rgba(5, 5, 10, ${alpha})`;
-      ctx.fillRect(0, 0, W, H);
-    }
-
-    function drawKaleido(sens) {
-      const cx = W / 2, cy = H / 2;
-      const slices = 10;
-      const R = Math.min(W, H) * 0.5;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.globalCompositeOperation = "lighter";
-      const n = freqData.length;
-      for (let s = 0; s < slices; s++) {
-        ctx.save();
-        ctx.rotate((s / slices) * Math.PI * 2 + rot);
-        if (s % 2) ctx.scale(1, -1);
-        ctx.beginPath();
-        for (let i = 0; i < n; i += 6) {
-          const v = (freqData[i] / 255) * sens;
-          const ang = (i / n) * (Math.PI / slices);
-          const rad = (i / n) * R * 0.4 + v * R * 0.5;
-          const x = Math.cos(ang) * rad;
-          const y = Math.sin(ang) * rad;
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.lineWidth = 1.5 + beat * 3;
-        ctx.strokeStyle = col(s * 14 + treble * 120, 55 + beat * 15, 0.55);
-        ctx.stroke();
-        ctx.restore();
-      }
-      const cr = (0.04 + bass * 0.22) * Math.min(W, H);
-      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, cr);
-      g.addColorStop(0, col(60, 70, 0.9));
-      g.addColorStop(1, col(60, 50, 0));
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(0, 0, cr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-
-    function drawTunnel(sens) {
-      const cx = W / 2, cy = H / 2;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.globalCompositeOperation = "lighter";
-      const rings = 26;
-      const maxR = Math.hypot(W, H) * 0.55;
-      for (let r = rings; r > 0; r--) {
-        const z = ((r + (flow * 6) % 1) / rings);
-        const radius = z * z * maxR;
-        const bandIdx = Math.floor((1 - z) * freqData.length);
-        const v = (freqData[bandIdx] / 255) * sens;
-        const wob = v * 40;
-        ctx.beginPath();
-        const seg = 48;
-        for (let i = 0; i <= seg; i++) {
-          const a = (i / seg) * Math.PI * 2;
-          const rr = radius + Math.sin(a * 6 + flow * 4 + r) * wob;
-          const x = Math.cos(a + rot) * rr;
-          const y = Math.sin(a + rot) * rr;
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.closePath();
-        ctx.lineWidth = 1 + z * 3 + beat * 2;
-        ctx.strokeStyle = col(r * 8 + z * 120, 30 + z * 45, 0.5 * z + 0.1);
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
-    function drawBloom(sens) {
-      const cx = W / 2, cy = H / 2;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(rot * 0.5);
-      ctx.globalCompositeOperation = "lighter";
-      const n = freqData.length;
-      const petals = 220;
-      const base = Math.min(W, H) * 0.10;
-      for (let i = 0; i < petals; i++) {
-        const idx = Math.floor((i / petals) * n);
-        const v = (freqData[idx] / 255) * sens;
-        const a = (i / petals) * Math.PI * 2 * 5;
-        const rad = base + i * (Math.min(W, H) * 0.0016) + v * Math.min(W, H) * 0.28;
-        const x = Math.cos(a) * rad;
-        const y = Math.sin(a) * rad;
-        const size = 1 + v * 14 + beat * 4;
-        ctx.fillStyle = col(i * 1.5 + v * 90, 45 + v * 40, 0.7);
-        ctx.beginPath();
-        ctx.arc(x, y, size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    function drawWaves(sens) {
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      const layers = 4;
-      const n = timeData.length;
-      for (let L = 0; L < layers; L++) {
-        ctx.beginPath();
-        const yBase = H * (0.3 + L * 0.13);
-        const amp = (H * 0.12) * sens * (1 + bass);
-        for (let i = 0; i < n; i += 2) {
-          const x = (i / n) * W;
-          const wave = (timeData[i] - 128) / 128;
-          const y = yBase + wave * amp + Math.sin(i * 0.01 + flow * 2 + L) * 20 * (1 + mid);
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.lineWidth = 2 + beat * 4;
-        ctx.strokeStyle = col(L * 40 + treble * 100, 55, 0.55);
-        ctx.shadowBlur = 18;
-        ctx.shadowColor = col(L * 40, 60, 0.8);
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
-    // Oscilloscope (X-Y / Lissajous): left channel drives X, right drives Y,
-    // exactly like an analog scope in X-Y mode (the "Tame Impala" look). The
-    // glowing trace plus the Trails control give it the CRT phosphor feel.
-    // Mono tracks have no separate Y, so we offset the Y axis by a short phase
-    // delay to keep the figure looping instead of collapsing to a flat line.
+    // ---- Draw ----
     function drawScope(sens) {
-      if (!scopeL) return;
-      const cx = W / 2, cy = H / 2;
       const n = scopeL.length;
-      const scale = Math.min(W, H) * 0.42 * (1 + bass * 0.18);
+      const scale = Math.min(W, H) * 0.42;
 
-      // Detect whether there's a real stereo difference between channels.
+      // Mono tracks have identical L/R, which collapses X-Y to a flat diagonal.
+      // Detect that and offset Y by a short phase delay so it still loops.
       let diff = 0;
       for (let i = 0; i < n; i += 64) diff += Math.abs(scopeL[i] - scopeR[i]);
       const stereo = diff > 0.02;
       const delay = Math.floor(n * 0.012);
 
       ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(Math.sin(flow * 0.2) * 0.08); // gentle drift
+      ctx.translate(W / 2, H / 2);
       ctx.globalCompositeOperation = "lighter";
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
-
-      // Draw the trace a few times with decreasing width for a soft bloom.
-      const passes = [
-        { w: 1.0, l: 60, a: 0.9, b: 22 },
-        { w: 3.0, l: 55, a: 0.35, b: 30 },
-      ];
-      for (const p of passes) {
-        ctx.beginPath();
-        for (let i = 0; i < n; i++) {
-          const lx = scopeL[i];
-          const ly = stereo ? scopeR[i] : scopeL[(i + delay) % n];
-          const x = lx * scale * sens;
-          const y = ly * scale * sens;
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.lineWidth = (p.w + beat * 2.5 + treble * 2);
-        ctx.strokeStyle = col(0, p.l + beat * 12, p.a);
-        ctx.shadowBlur = p.b + bass * 30;
-        ctx.shadowColor = col(0, 65, 0.9);
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
-    // Geometric: nested, counter-rotating polygons (triangle .. heptagon)
-    // whose vertices are pushed outward by the spectrum, so the shapes morph
-    // and spike with the music. A pulsing hexagon sits at the core.
-    function drawGeo(sens) {
-      const cx = W / 2, cy = H / 2;
-      const minWH = Math.min(W, H);
-      const n = freqData.length;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.globalCompositeOperation = "lighter";
-      const layers = 7;
-      for (let L = 0; L < layers; L++) {
-        const sides = 3 + (L % 5);
-        const bandIdx = Math.floor((L / layers) * n * 0.5);
-        const v = (freqData[bandIdx] / 255) * sens;
-        const baseR = (0.06 + L * 0.062) * minWH * (1 + bass * 0.25);
-        const spin = rot * (L % 2 ? -1.3 : 1) * (1 + L * 0.15) + flow * 0.2;
-        ctx.save();
-        ctx.rotate(spin);
-        ctx.beginPath();
-        for (let s = 0; s <= sides; s++) {
-          const a = (s / sides) * Math.PI * 2;
-          const fi = (Math.floor((s / sides) * n * 0.4) + bandIdx) % n;
-          const spike = (freqData[fi] / 255) * sens;
-          const r = baseR + spike * minWH * 0.10 + Math.sin(a * sides + flow * 2) * v * 22;
-          const x = Math.cos(a) * r, y = Math.sin(a) * r;
-          if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.closePath();
-        ctx.lineWidth = 1.5 + beat * 4 + v * 3;
-        ctx.strokeStyle = col(L * 40, 55 + beat * 12, 0.55);
-        ctx.shadowBlur = 14;
-        ctx.shadowColor = col(L * 40, 60, 0.85);
-        ctx.stroke();
-        ctx.restore();
-      }
-      const cr = (0.05 + bass * 0.14) * minWH;
-      ctx.rotate(-rot * 1.5);
       ctx.beginPath();
-      for (let s = 0; s <= 6; s++) {
-        const a = (s / 6) * Math.PI * 2;
-        ctx.lineTo(Math.cos(a) * cr, Math.sin(a) * cr);
+      for (let i = 0; i < n; i++) {
+        const x = scopeL[i] * scale * sens;
+        const y = (stereo ? scopeR[i] : scopeL[(i + delay) % n]) * scale * sens;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
       }
-      ctx.closePath();
-      ctx.fillStyle = col(60, 60, 0.25 + bass * 0.4);
-      ctx.fill();
+      ctx.lineWidth = 1.6 * DPR;
+      ctx.shadowBlur = 12 * DPR;
+      ctx.shadowColor = "rgba(0, 255, 100, 0.9)";
+      ctx.strokeStyle = "rgba(120, 255, 150, 0.95)";
+      ctx.stroke();
       ctx.restore();
     }
 
-    // ---- Beat-triggered sparkles (flair, drawn over every mode) ----
-    function spawnSparks() {
-      const cx = W / 2, cy = H / 2;
-      const count = 10 + Math.floor(treble * 24);
-      for (let i = 0; i < count; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const sp = (2 + Math.random() * 6) * DPR * (1 + bass);
-        sparks.push({ x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, off: Math.random() * 140 });
-      }
-      if (sparks.length > 400) sparks.splice(0, sparks.length - 400);
-    }
-
-    function drawSparks(dt) {
-      if (!sparks.length) return;
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      for (let i = sparks.length - 1; i >= 0; i--) {
-        const s = sparks[i];
-        s.x += s.vx; s.y += s.vy;
-        s.vx *= 0.96; s.vy *= 0.96;
-        s.life -= dt * 0.8;
-        if (s.life <= 0) { sparks.splice(i, 1); continue; }
-        ctx.fillStyle = col(s.off, 70, s.life * 0.9);
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, (1 + s.life * 3) * DPR, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    const renderers = {
-      scope: drawScope,
-      kaleido: drawKaleido,
-      geo: drawGeo,
-      tunnel: drawTunnel,
-      bloom: drawBloom,
-      waves: drawWaves,
-    };
-
-    let last = performance.now();
-    function frame(now) {
-      const dt = Math.min((now - last) / 1000, 0.05);
-      last = now;
-      t += dt;
-
-      // Wrapped so a single draw error can never permanently kill the loop,
-      // and guarded so we never touch the frequency buffers before audio init.
+    function frame() {
       try {
-        if (analyser) {
-          analyze();
+        if (analyserL) {
+          analyserL.getFloatTimeDomainData(scopeL);
+          analyserR.getFloatTimeDomainData(scopeR);
           updateTransport();
 
           const sens = parseFloat(sensitivityInput.value);
           const trail = parseFloat(trailsInput.value);
-          const colorSpeed = parseFloat(colorSpeedInput.value);
-          const speed = parseFloat(speedInput.value);
 
-          hueBase += (colorSpeed * 12 + treble * 40 + beat * 30) * dt;
-          rot += (0.15 + bass * 1.2 + beat * 0.6) * dt * speed;
-          flow += dt * speed;
+          // Phosphor fade: translucent black over the previous frame.
+          ctx.globalCompositeOperation = "source-over";
+          ctx.fillStyle = "rgba(0, 0, 0, " + trail + ")";
+          ctx.fillRect(0, 0, W, H);
 
-          // Beat onset -> sparkle burst + a soft full-screen pulse.
-          if (beat > 0.6 && prevBeat <= 0.6) { spawnSparks(); flash = 1; }
-          prevBeat = beat;
-          flash *= 0.9;
-
-          fade(trail);
-          const fn = renderers[modeSel.value] || drawKaleido;
-          fn(sens);
-          drawSparks(dt);
-          if (flash > 0.02) {
-            ctx.save();
-            ctx.globalCompositeOperation = "lighter";
-            ctx.fillStyle = col(0, 60, flash * 0.06);
-            ctx.fillRect(0, 0, W, H);
-            ctx.restore();
-          }
+          drawScope(sens);
         } else {
-          // No audio loaded yet — keep the loop running without drawing.
-          fade(0.4);
+          ctx.fillStyle = "rgba(0,0,0,0.3)";
+          ctx.fillRect(0, 0, W, H);
         }
       } catch (err) {
         console.error("render error:", err);
       }
-
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
