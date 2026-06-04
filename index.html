@@ -137,6 +137,10 @@
         <span>Shape</span>
         <input id="motion" type="range" min="0" max="1" step="0.01" value="0.4" />
       </label>
+      <label class="ctl">
+        <span>Audio</span>
+        <input id="react" type="range" min="0" max="1" step="0.01" value="1" />
+      </label>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
     </div>
@@ -164,6 +168,7 @@
     const nowPlaying = document.getElementById("nowPlaying");
     const sensitivityInput = document.getElementById("sensitivity");
     const motionInput = document.getElementById("motion");
+    const reactInput = document.getElementById("react");
     const newFileBtn = document.getElementById("newFileBtn");
     const fsBtn = document.getElementById("fsBtn");
 
@@ -352,31 +357,87 @@
     let nextEvent = 0;      // time of the next random pace change
     let breathe = 1;        // breathing zoom
 
-    function drawScope(sens, energy, flicker, motion) {
+    // Shape morphing: the line eases from one 3D form to another every ~30s.
+    let formA = 0, formB = 0, morph = 1, nextShape = 0;
+    const NFORMS = 6;
+
+    function drawScope(sens, energy, flicker, motion, react) {
       const n = scopeL.length;
       const TWO_PI = Math.PI * 2;
+      const PI = Math.PI;
       const baseR = Math.min(W, H) * 0.40 * sens;
 
-      // ONE continuous line, no trails. "Shape" = how many times it winds from
-      // pole to pole: ~1 loop on the left (a simple wobbling ring) up to a dense
-      // globe of coils on the right. The audio distorts the radius so it reacts.
+      // "Shape" = how many times the single line winds. Audio (react) sets how
+      // much the sound displaces the line: 0 = fully contained clean form,
+      // 1 = full distortion like before.
       const loops = 1 + motion * 14;
-      const amp = 0.3 + Math.min(energy, 0.5);   // audio distortion depth
+      const amp = (0.3 + Math.min(energy, 0.5)) * react;
       const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
       const ct = Math.cos(tilt), st = Math.sin(tilt);
 
+      // The 3D forms the line can take. Each maps path position p (0..1) and the
+      // audio sample s to a point [x,y,z]; `a` is the audio displacement.
+      function formPoint(form, p, s, out) {
+        const a = s * amp;
+        const th = p * TWO_PI * loops + rot;
+        let x, y, z;
+        switch (form) {
+          case 1: { // torus
+            const R = baseR * 0.68, r2 = baseR * 0.30 * (1 + a);
+            const v = p * TWO_PI * Math.max(2, Math.round(loops * 0.5));
+            const rr = R + r2 * Math.cos(v);
+            x = rr * Math.cos(th); y = r2 * Math.sin(v); z = rr * Math.sin(th);
+            break;
+          }
+          case 2: { // helix / spring
+            const r = baseR * 0.6 * (1 + a);
+            x = r * Math.cos(th); y = (p - 0.5) * 2 * baseR; z = r * Math.sin(th);
+            break;
+          }
+          case 3: { // lissajous knot
+            const R = baseR * (1 + a * 0.5);
+            const C = Math.max(2, Math.round(loops * 0.5));
+            x = R * Math.sin(3 * p * TWO_PI + rot);
+            y = R * Math.sin(2 * p * TWO_PI);
+            z = R * Math.sin(C * p * TWO_PI + rot * 0.5);
+            break;
+          }
+          case 4: { // cone spiral
+            const r = baseR * p * (1 + a);
+            x = r * Math.cos(th); y = (p - 0.5) * 2 * baseR; z = r * Math.sin(th);
+            break;
+          }
+          case 5: { // rose / flower with a depth wave
+            const k = Math.max(2, Math.round(2 + loops * 0.4));
+            const rr = baseR * (0.35 + 0.65 * Math.abs(Math.cos(k * p * TWO_PI))) * (1 + a);
+            const ang = p * TWO_PI * Math.max(1, Math.round(loops * 0.3)) + rot;
+            x = rr * Math.cos(ang); y = rr * Math.sin(ang); z = baseR * 0.3 * Math.sin(p * TWO_PI * 3);
+            break;
+          }
+          default: { // 0: globe / sphere
+            const r = baseR * (1 + a);
+            const phi = p * PI, sp = Math.sin(phi);
+            x = r * sp * Math.cos(th); y = r * Math.cos(phi); z = r * sp * Math.sin(th);
+          }
+        }
+        out[0] = x; out[1] = y; out[2] = z;
+      }
+
+      const A = [0, 0, 0], B = [0, 0, 0];
       const path = new Path2D();
       for (let i = 0; i < n; i++) {
         const p = i / n;
         const s = (scopeL[i] + scopeR[i]) * 0.5;
-        const r = baseR * Math.max(0.05, 1 + s * amp);
-        const phi = p * Math.PI;                 // pole to pole
-        const theta = p * TWO_PI * loops + rot;  // winds around, spins over time
-        const sp = Math.sin(phi);
-        const x = r * sp * Math.cos(theta);
-        const y0 = r * Math.cos(phi);
-        const z0 = r * sp * Math.sin(theta);
-        const y = y0 * ct - z0 * st;             // tilt, then drop depth (ortho)
+        formPoint(formA, p, s, A);
+        let x3 = A[0], y3 = A[1], z3 = A[2];
+        if (morph < 1) {              // ease between the old and new form
+          formPoint(formB, p, s, B);
+          x3 += (B[0] - x3) * morph;
+          y3 += (B[1] - y3) * morph;
+          z3 += (B[2] - z3) * morph;
+        }
+        const x = x3;
+        const y = y3 * ct - z3 * st;  // tilt, then drop depth (ortho)
         if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
       }
 
@@ -387,14 +448,14 @@
       ctx.lineCap = "round";
 
       // Green glow underneath...
-      ctx.lineWidth = (2.2 + energy * 4) * DPR;
+      ctx.lineWidth = (2.2 + energy * 4 * react) * DPR;
       ctx.shadowBlur = 16 * DPR;
       ctx.shadowColor = "rgba(0, 255, 110, 0.9)";
       ctx.strokeStyle = "rgba(40, 255, 120, " + (0.5 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
 
       // ...hot near-white core on top.
-      ctx.lineWidth = (0.9 + energy * 1.4) * DPR;
+      ctx.lineWidth = (0.9 + energy * 1.4 * react) * DPR;
       ctx.shadowBlur = 5 * DPR;
       ctx.strokeStyle = "rgba(200, 255, 215, " + (0.95 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
@@ -439,9 +500,18 @@
           // a single clean line. Toward 1: precession + long trails build the
           // looping tangle.
           const motion = parseFloat(motionInput.value);
-          // Steady spin (with random pacing + loudness). Trails are gone, so
-          // this just rotates the 3D figure over time.
-          rot += (0.3 + energy * 1.8) * slow * dt;
+          const react = parseFloat(reactInput.value);
+          // Steady spin; loudness only speeds it up as far as Audio allows.
+          rot += (0.3 + energy * 1.8 * react) * slow * dt;
+
+          // Switch to a new (different) form roughly every 30s, easing ~2s.
+          if (t > nextShape) {
+            nextShape = t + 25 + Math.random() * 10;
+            formA = formB;
+            formB = (formB + 1 + Math.floor(Math.random() * (NFORMS - 1))) % NFORMS;
+            morph = 0;
+          }
+          if (morph < 1) morph = Math.min(1, morph + dt * 0.5);
 
           const sens = parseFloat(sensitivityInput.value);
 
@@ -452,7 +522,7 @@
 
           // Subtle analog brightness flicker.
           const flicker = 0.9 + 0.1 * Math.sin(t * 7.3 + Math.sin(t * 2.1) * 2);
-          drawScope(sens, energy, flicker, motion);
+          drawScope(sens, energy, flicker, motion, react);
         } else {
           ctx.fillStyle = "rgba(0,0,0,0.3)";
           ctx.fillRect(0, 0, W, H);
