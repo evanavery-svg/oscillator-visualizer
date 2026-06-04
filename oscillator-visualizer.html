@@ -134,12 +134,8 @@
         <input id="sensitivity" type="range" min="0.3" max="2.5" step="0.05" value="1" />
       </label>
       <label class="ctl">
-        <span>Persistence</span>
-        <input id="trails" type="range" min="0.012" max="0.4" step="0.004" value="0.03" />
-      </label>
-      <label class="ctl">
         <span>Motion</span>
-        <input id="motion" type="range" min="0" max="1.3" step="0.02" value="0.7" />
+        <input id="motion" type="range" min="0" max="1" step="0.01" value="0.6" />
       </label>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
@@ -167,7 +163,6 @@
     const timeLabel = document.getElementById("time");
     const nowPlaying = document.getElementById("nowPlaying");
     const sensitivityInput = document.getElementById("sensitivity");
-    const trailsInput = document.getElementById("trails");
     const motionInput = document.getElementById("motion");
     const newFileBtn = document.getElementById("newFileBtn");
     const fsBtn = document.getElementById("fsBtn");
@@ -357,10 +352,14 @@
     let nextEvent = 0;      // time of the next random pace change
     let breathe = 1;        // breathing zoom
 
-    function drawScope(sens, energy, flicker) {
+    function drawScope(sens, energy, flicker, motion) {
       const n = scopeL.length;
       // The figure swells with the music (energy) on top of the size slider.
       const baseScale = Math.min(W, H) * 0.40 * sens * (0.85 + energy * 1.4);
+
+      // Fewer samples at low motion -> a short, clean single sweep; the full
+      // buffer at high motion -> the dense, busy figure.
+      const count = Math.max(64, Math.floor(n * (0.18 + 0.82 * motion)));
 
       // Mono fallback: offset Y by a short phase delay so it still loops.
       let diff = 0;
@@ -369,7 +368,7 @@
       const delay = Math.floor(n * 0.012);
 
       const path = new Path2D();
-      for (let i = 0; i < n; i++) {
+      for (let i = 0; i < count; i++) {
         const x = scopeL[i] * baseScale;
         const y = (stereo ? scopeR[i] : scopeL[(i + delay) % n]) * baseScale;
         if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
@@ -432,12 +431,17 @@
           // positions stack into the looping circle. Loudness speeds it up, and
           // the Motion slider scales it — at 0 the line stops precessing and
           // stays a single stable stroke.
+          // One master slider. Near 0: no precession + fast-clearing trail =>
+          // a single clean line. Toward 1: precession + long trails build the
+          // looping tangle.
           const motion = parseFloat(motionInput.value);
           rot += (0.12 + energy * 4.5) * slow * dt * motion;
           breathe = 1 + energy * 0.6 * motion + 0.03 * Math.sin(t * 0.4);
 
           const sens = parseFloat(sensitivityInput.value);
-          const trail = parseFloat(trailsInput.value);
+          // Motion sets persistence too: high fade alpha (short trail) at 0,
+          // long trails near 1.
+          const trail = 0.6 - 0.57 * motion;
 
           // Phosphor fade: translucent black over the previous frame.
           ctx.globalCompositeOperation = "source-over";
@@ -446,7 +450,7 @@
 
           // Subtle analog brightness flicker.
           const flicker = 0.9 + 0.1 * Math.sin(t * 7.3 + Math.sin(t * 2.1) * 2);
-          drawScope(sens, energy, flicker);
+          drawScope(sens, energy, flicker, motion);
         } else {
           ctx.fillStyle = "rgba(0,0,0,0.3)";
           ctx.fillRect(0, 0, W, H);
