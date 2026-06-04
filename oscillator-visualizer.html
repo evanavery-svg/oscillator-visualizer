@@ -134,8 +134,8 @@
         <input id="sensitivity" type="range" min="0.3" max="2.5" step="0.05" value="1" />
       </label>
       <label class="ctl">
-        <span>Motion</span>
-        <input id="motion" type="range" min="0" max="1" step="0.01" value="0.6" />
+        <span>Shape</span>
+        <input id="motion" type="range" min="0" max="1" step="0.01" value="0.4" />
       </label>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
@@ -352,43 +352,50 @@
     let nextEvent = 0;      // time of the next random pace change
     let breathe = 1;        // breathing zoom
 
-    function drawScope(sens, energy, flicker) {
+    function drawScope(sens, energy, flicker, motion) {
       const n = scopeL.length;
-      // The figure swells with the music (energy) on top of the size slider.
-      const baseScale = Math.min(W, H) * 0.40 * sens * (0.85 + energy * 1.4);
+      const TWO_PI = Math.PI * 2;
+      const baseR = Math.min(W, H) * 0.40 * sens;
 
-      // Plot each sample against a phase-delayed copy of the signal (a
-      // phase-space plot). Unlike a plain left-vs-right plot — which collapses
-      // to a diagonal for center-mixed tracks — this turns ANY song into
-      // looping Lissajous shapes. X leans on the left channel, Y on a delayed
-      // mono sum, so real stereo content still adds character.
-      const delay = 64;
+      // ONE continuous line, no trails. "Shape" = how many times it winds from
+      // pole to pole: ~1 loop on the left (a simple wobbling ring) up to a dense
+      // globe of coils on the right. The audio distorts the radius so it reacts.
+      const loops = 1 + motion * 14;
+      const amp = 0.3 + Math.min(energy, 0.5);   // audio distortion depth
+      const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
+      const ct = Math.cos(tilt), st = Math.sin(tilt);
+
       const path = new Path2D();
       for (let i = 0; i < n; i++) {
-        const j = (i + delay) % n;
-        const x = scopeL[i] * baseScale;
-        const y = ((scopeL[j] + scopeR[j]) * 0.5) * baseScale;
+        const p = i / n;
+        const s = (scopeL[i] + scopeR[i]) * 0.5;
+        const r = baseR * Math.max(0.05, 1 + s * amp);
+        const phi = p * Math.PI;                 // pole to pole
+        const theta = p * TWO_PI * loops + rot;  // winds around, spins over time
+        const sp = Math.sin(phi);
+        const x = r * sp * Math.cos(theta);
+        const y0 = r * Math.cos(phi);
+        const z0 = r * sp * Math.sin(theta);
+        const y = y0 * ct - z0 * st;             // tilt, then drop depth (ortho)
         if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
       }
 
       ctx.save();
       ctx.translate(W / 2, H / 2);
-      ctx.rotate(rot);
-      ctx.scale(breathe, breathe);
       ctx.globalCompositeOperation = "lighter";
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
 
-      // One bright line: a soft green glow underneath...
-      ctx.lineWidth = (2.6 + energy * 5) * DPR;
-      ctx.shadowBlur = 18 * DPR;
+      // Green glow underneath...
+      ctx.lineWidth = (2.2 + energy * 4) * DPR;
+      ctx.shadowBlur = 16 * DPR;
       ctx.shadowColor = "rgba(0, 255, 110, 0.9)";
       ctx.strokeStyle = "rgba(40, 255, 120, " + (0.5 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
 
-      // ...with a hot near-white core on top.
-      ctx.lineWidth = (1.0 + energy * 1.6) * DPR;
-      ctx.shadowBlur = 6 * DPR;
+      // ...hot near-white core on top.
+      ctx.lineWidth = (0.9 + energy * 1.4) * DPR;
+      ctx.shadowBlur = 5 * DPR;
       ctx.strokeStyle = "rgba(200, 255, 215, " + (0.95 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
 
@@ -432,25 +439,20 @@
           // a single clean line. Toward 1: precession + long trails build the
           // looping tangle.
           const motion = parseFloat(motionInput.value);
-          // Gentle base rotation always (so the single line slowly turns and
-          // makes evolving shapes), plus loudness-driven precession on top.
-          rot += (0.12 + (0.12 + energy * 4.5) * slow * motion) * dt;
-          breathe = 1 + energy * 0.6 * motion + 0.03 * Math.sin(t * 0.4);
+          // Steady spin (with random pacing + loudness). Trails are gone, so
+          // this just rotates the 3D figure over time.
+          rot += (0.3 + energy * 1.8) * slow * dt;
 
           const sens = parseFloat(sensitivityInput.value);
-          // Motion sets the trail: at 0 the screen clears fully each frame so
-          // it's a single crisp line drawing live shapes; toward 1 the trail
-          // lingers and stacks into the looping tangle (the "normal" scope).
-          const trail = 1 - 0.97 * motion;
 
-          // Phosphor fade: translucent black over the previous frame.
+          // No trails — clear the frame completely every time.
           ctx.globalCompositeOperation = "source-over";
-          ctx.fillStyle = "rgba(0, 0, 0, " + trail + ")";
+          ctx.fillStyle = "#000";
           ctx.fillRect(0, 0, W, H);
 
           // Subtle analog brightness flicker.
           const flicker = 0.9 + 0.1 * Math.sin(t * 7.3 + Math.sin(t * 2.1) * 2);
-          drawScope(sens, energy, flicker);
+          drawScope(sens, energy, flicker, motion);
         } else {
           ctx.fillStyle = "rgba(0,0,0,0.3)";
           ctx.fillRect(0, 0, W, H);
