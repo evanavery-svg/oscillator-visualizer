@@ -199,6 +199,7 @@
       <label class="ctl">
         <span>Mode</span>
         <select id="mode">
+          <option value="scope">Oscilloscope (X-Y)</option>
           <option value="kaleido">Kaleidoscope</option>
           <option value="geo">Geometric</option>
           <option value="tunnel">Warp Tunnel</option>
@@ -213,6 +214,8 @@
       <label class="ctl">
         <span>Palette</span>
         <select id="palette">
+          <option value="currents" selected>Currents (warm)</option>
+          <option value="phosphor">Phosphor (green)</option>
           <option value="spectrum">Spectrum</option>
           <option value="neon">Neon</option>
           <option value="sunset">Sunset</option>
@@ -272,6 +275,12 @@
     let analyser = null;
     let freqData = null;
     let timeData = null;
+    // Per-channel analysers for the stereo X-Y oscilloscope (Lissajous).
+    let splitter = null;
+    let analyserL = null;
+    let analyserR = null;
+    let scopeL = null;
+    let scopeR = null;
 
     let audioBuffer = null;
     let sourceNode = null;
@@ -288,6 +297,17 @@
       analyser.connect(audioCtx.destination);
       freqData = new Uint8Array(analyser.frequencyBinCount);
       timeData = new Uint8Array(analyser.fftSize);
+
+      // Split L/R so the oscilloscope can plot left channel vs right channel.
+      splitter = audioCtx.createChannelSplitter(2);
+      analyserL = audioCtx.createAnalyser();
+      analyserR = audioCtx.createAnalyser();
+      analyserL.fftSize = 2048;
+      analyserR.fftSize = 2048;
+      splitter.connect(analyserL, 0);
+      splitter.connect(analyserR, 1);
+      scopeL = new Float32Array(analyserL.fftSize);
+      scopeR = new Float32Array(analyserR.fftSize);
     }
 
     const duration = () => (audioBuffer ? audioBuffer.duration : 0);
@@ -316,6 +336,7 @@
       sourceNode = audioCtx.createBufferSource();
       sourceNode.buffer = audioBuffer;
       sourceNode.connect(analyser);
+      sourceNode.connect(splitter);
       sourceNode.onended = () => {
         isPlaying = false;
         pausedAt = duration();
@@ -455,6 +476,10 @@
       if (!analyser) return;
       analyser.getByteFrequencyData(freqData);
       analyser.getByteTimeDomainData(timeData);
+      if (analyserL) {
+        analyserL.getFloatTimeDomainData(scopeL);
+        analyserR.getFloatTimeDomainData(scopeR);
+      }
       const n = freqData.length;
       const bassEnd = Math.floor(n * 0.06);
       const midEnd = Math.floor(n * 0.30);
@@ -485,6 +510,8 @@
     // Color palettes. `band` >= 360 means a continuously-rotating full
     // spectrum; smaller bands keep the hue inside a themed slice of the wheel.
     const PALS = {
+      currents: { base: 345, band: 90,  sat: 85,  spread: 0.8 }, // warm pink/orange/red
+      phosphor: { base: 110, band: 40,  sat: 100, spread: 0.6 }, // classic green scope
       spectrum: { base: 0,   band: 360, sat: 90,  spread: 1.0 },
       neon:     { base: 185, band: 150, sat: 100, spread: 1.2 },
       sunset:   { base: 330, band: 110, sat: 95,  spread: 0.9 },
@@ -636,6 +663,53 @@
       ctx.restore();
     }
 
+    // Oscilloscope (X-Y / Lissajous): left channel drives X, right drives Y,
+    // exactly like an analog scope in X-Y mode (the "Tame Impala" look). The
+    // glowing trace plus the Trails control give it the CRT phosphor feel.
+    // Mono tracks have no separate Y, so we offset the Y axis by a short phase
+    // delay to keep the figure looping instead of collapsing to a flat line.
+    function drawScope(sens) {
+      if (!scopeL) return;
+      const cx = W / 2, cy = H / 2;
+      const n = scopeL.length;
+      const scale = Math.min(W, H) * 0.42 * (1 + bass * 0.18);
+
+      // Detect whether there's a real stereo difference between channels.
+      let diff = 0;
+      for (let i = 0; i < n; i += 64) diff += Math.abs(scopeL[i] - scopeR[i]);
+      const stereo = diff > 0.02;
+      const delay = Math.floor(n * 0.012);
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(Math.sin(flow * 0.2) * 0.08); // gentle drift
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+
+      // Draw the trace a few times with decreasing width for a soft bloom.
+      const passes = [
+        { w: 1.0, l: 60, a: 0.9, b: 22 },
+        { w: 3.0, l: 55, a: 0.35, b: 30 },
+      ];
+      for (const p of passes) {
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+          const lx = scopeL[i];
+          const ly = stereo ? scopeR[i] : scopeL[(i + delay) % n];
+          const x = lx * scale * sens;
+          const y = ly * scale * sens;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.lineWidth = (p.w + beat * 2.5 + treble * 2);
+        ctx.strokeStyle = col(0, p.l + beat * 12, p.a);
+        ctx.shadowBlur = p.b + bass * 30;
+        ctx.shadowColor = col(0, 65, 0.9);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // Geometric: nested, counter-rotating polygons (triangle .. heptagon)
     // whose vertices are pushed outward by the spectrum, so the shapes morph
     // and spike with the music. A pulsing hexagon sits at the core.
@@ -716,6 +790,7 @@
     }
 
     const renderers = {
+      scope: drawScope,
       kaleido: drawKaleido,
       geo: drawGeo,
       tunnel: drawTunnel,
