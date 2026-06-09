@@ -778,7 +778,10 @@
       lctx.save();
       lctx.translate(W / 2, H / 2);
       lctx.rotate(0.12 * Math.sin(t * 0.09)); // slow rolling sway
-      const shrink = 1 - hush * 0.85;         // melt toward the center in hush
+      // Melt: in hush the whole figure collapses all the way into the center
+      // — whatever shape it is — and visibly becomes the dot. The pow curve
+      // makes the collapse accelerate as it approaches the middle.
+      const shrink = Math.max(0.002, Math.pow(1 - hush, 1.5));
       lctx.scale(breathe * shrink, breathe * shrink);
       lctx.globalCompositeOperation = "lighter";
       lctx.lineJoin = "round";
@@ -790,7 +793,9 @@
       const sat = Math.min(100, (hue / 14) * 100);
       const glowL = 58 + (100 - sat) * 0.25; // white end glows a touch brighter
       const swell = 1 + bloom * 0.35;        // bloom brightens + thickens
-      const vis = 1 - hush;                  // hush fades the figure out
+      // Stay fully visible while collapsing; only crossfade out right at the
+      // end, once the figure is already dot-sized.
+      const vis = 1 - Math.min(1, Math.max(0, (hush - 0.8) / 0.2));
 
       // Far bands first, near bands last: a colored body and a hot near-white
       // core, scaled by each band's depth factor (and treble thickness).
@@ -826,13 +831,14 @@
 
       lctx.restore();
 
-      // Quiet dot: as the figure melts away, a tiny softly-pulsing ember
-      // remains at the center (it picks up the glow pipeline for free).
-      if (hush > 0.01) {
+      // The ember dot takes over only at the tail end of the collapse, so the
+      // shrinking line hands off into it seamlessly.
+      const dotA = Math.min(1, Math.max(0, (hush - 0.7) / 0.3));
+      if (dotA > 0.01) {
         lctx.save();
         lctx.globalCompositeOperation = "lighter";
         const dr = (1.5 + 0.5 * Math.sin(t * 1.6)) * DPR;
-        lctx.fillStyle = "hsla(" + hue + ", " + sat + "%, 85%, " + (0.9 * hush).toFixed(3) + ")";
+        lctx.fillStyle = "hsla(" + hue + ", " + sat + "%, 85%, " + (0.9 * dotA).toFixed(3) + ")";
         lctx.beginPath();
         lctx.arc(W / 2, H / 2, dr, 0, 6.2832);
         lctx.fill();
