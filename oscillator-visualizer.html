@@ -89,6 +89,11 @@
       height: 4px; border-radius: 4px; background: rgba(77, 255, 136, 0.35); outline: none;
     }
     input[type="range"].seek { flex: 1 1 auto; }
+    #hue {
+      background: linear-gradient(90deg,
+        hsl(0,100%,55%), hsl(60,100%,55%), hsl(120,100%,55%),
+        hsl(180,100%,55%), hsl(240,100%,55%), hsl(300,100%,55%), hsl(360,100%,55%));
+    }
     input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
       width: 13px; height: 13px; border-radius: 50%;
@@ -141,6 +146,10 @@
         <span>Audio</span>
         <input id="react" type="range" min="0" max="1" step="0.01" value="1" />
       </label>
+      <label class="ctl">
+        <span>Color</span>
+        <input id="hue" type="range" min="0" max="360" step="1" value="140" />
+      </label>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
     </div>
@@ -169,6 +178,7 @@
     const sensitivityInput = document.getElementById("sensitivity");
     const motionInput = document.getElementById("motion");
     const reactInput = document.getElementById("react");
+    const hueInput = document.getElementById("hue");
     const newFileBtn = document.getElementById("newFileBtn");
     const fsBtn = document.getElementById("fsBtn");
 
@@ -359,7 +369,7 @@
 
     // Shape morphing: the line eases from one 3D form to another every ~30s.
     let formA = 0, formB = 0, morph = 1, nextShape = 0;
-    const NFORMS = 6;
+    const NFORMS = 10;
 
     // Waveform smoothed along its length and blended across frames, so the
     // line's displacement glides instead of jittering.
@@ -379,11 +389,14 @@
       const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
       const ct = Math.cos(tilt), st = Math.sin(tilt);
 
-      // The 3D forms the line can take. Each maps path position p (0..1) and the
-      // audio sample s to a point [x,y,z]; `a` is the audio displacement.
+      // The 3D forms the line can take. Each maps path position p (0..1) and
+      // the audio sample s to a point [x,y,z]; `a` is the audio displacement.
+      // Forms are defined unrotated — one shared yaw spin is applied to the
+      // blended point afterwards, so every shape turns identically and morphs
+      // read as a single object re-folding itself.
       function formPoint(form, p, s, out) {
         const a = s * amp;
-        const th = p * TWO_PI * loops + rot;
+        const th = p * TWO_PI * loops;
         let x, y, z;
         switch (form) {
           case 1: { // torus
@@ -401,9 +414,9 @@
           case 3: { // lissajous knot
             const R = baseR * (1 + a * 0.5);
             const C = Math.max(2, Math.round(loops * 0.5));
-            x = R * Math.sin(3 * p * TWO_PI + rot);
-            y = R * Math.sin(2 * p * TWO_PI);
-            z = R * Math.sin(C * p * TWO_PI + rot * 0.5);
+            x = R * Math.sin(3 * p * TWO_PI);
+            y = R * Math.sin(2 * p * TWO_PI + 0.9);
+            z = R * Math.sin(C * p * TWO_PI + 0.4);
             break;
           }
           case 4: { // cone spiral
@@ -414,8 +427,45 @@
           case 5: { // rose / flower with a depth wave
             const k = Math.max(2, Math.round(2 + loops * 0.4));
             const rr = baseR * (0.35 + 0.65 * Math.abs(Math.cos(k * p * TWO_PI))) * (1 + a);
-            const ang = p * TWO_PI * Math.max(1, Math.round(loops * 0.3)) + rot;
+            const ang = p * TWO_PI * Math.max(1, Math.round(loops * 0.3));
             x = rr * Math.cos(ang); y = rr * Math.sin(ang); z = baseR * 0.3 * Math.sin(p * TWO_PI * 3);
+            break;
+          }
+          case 6: { // torus knot — a line tied around an invisible donut
+            const q = 3 + 2 * Math.round(loops * 0.15);
+            const u = p * TWO_PI;
+            const R = baseR * 0.34 * (1 + a);
+            const rr = Math.cos(q * u) + 2;
+            x = R * rr * Math.cos(2 * u);
+            y = R * rr * Math.sin(2 * u);
+            z = R * -Math.sin(q * u) * 1.4;
+            break;
+          }
+          case 7: { // Möbius edge — one line tracing a twisted band
+            const u = p * TWO_PI * 2; // the edge closes after two trips around
+            const v = 0.38 * (1 + a);
+            const R = baseR * 0.62;
+            x = R * (1 + v * Math.cos(u / 2)) * Math.cos(u);
+            z = R * (1 + v * Math.cos(u / 2)) * Math.sin(u);
+            y = R * v * Math.sin(u / 2) * 1.6;
+            break;
+          }
+          case 8: { // butterfly curve, given depth with a slow z-wave
+            const u = p * PI * 24;
+            const rb = Math.exp(Math.sin(u)) - 2 * Math.cos(4 * u)
+                     + Math.pow(Math.sin((2 * u - PI) / 24), 5);
+            const R = baseR * 0.26 * (1 + a);
+            x = R * rb * Math.sin(u);
+            y = R * rb * Math.cos(u);
+            z = baseR * 0.3 * Math.sin(u * 0.5);
+            break;
+          }
+          case 9: { // infinity ribbon — a winding figure-eight band
+            const u = p * TWO_PI * Math.max(1, Math.round(loops * 0.4));
+            const R = baseR * (1 + a);
+            x = R * Math.sin(u);
+            y = R * Math.sin(u) * Math.cos(u) * 0.9;
+            z = R * 0.35 * Math.cos(3 * u);
             break;
           }
           default: { // 0: globe / sphere
@@ -429,6 +479,7 @@
 
       const A = [0, 0, 0], B = [0, 0, 0];
       const ease = morph * morph * (3 - 2 * morph); // smoothstep morph easing
+      const cy = Math.cos(rot), sy = Math.sin(rot); // shared yaw spin
       const pts = [];
       for (let i = 0; i < n; i += 4) {
         const p = i / n;
@@ -441,7 +492,10 @@
           y3 += (B[1] - y3) * ease;
           z3 += (B[2] - z3) * ease;
         }
-        pts.push(x3, y3 * ct - z3 * st); // tilt, then drop depth (ortho)
+        // Yaw the blended point, then tilt, then drop depth (ortho).
+        const xr = x3 * cy + z3 * sy;
+        const zr = -x3 * sy + z3 * cy;
+        pts.push(xr, y3 * ct - zr * st);
       }
 
       // Quadratic midpoint smoothing: the stroke curves through segment
@@ -462,17 +516,18 @@
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
 
-      // Green glow underneath...
+      // Colored glow underneath (hue from the Color slider, green by default)...
+      const hue = parseFloat(hueInput.value);
       ctx.lineWidth = (2.2 + energy * 4 * react) * DPR;
       ctx.shadowBlur = 16 * DPR;
-      ctx.shadowColor = "rgba(0, 255, 110, 0.9)";
-      ctx.strokeStyle = "rgba(40, 255, 120, " + (0.5 * flicker).toFixed(3) + ")";
+      ctx.shadowColor = "hsla(" + hue + ", 100%, 58%, 0.9)";
+      ctx.strokeStyle = "hsla(" + hue + ", 100%, 62%, " + (0.5 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
 
-      // ...hot near-white core on top.
+      // ...hot near-white core on top, faintly tinted toward the hue.
       ctx.lineWidth = (0.9 + energy * 1.4 * react) * DPR;
       ctx.shadowBlur = 5 * DPR;
-      ctx.strokeStyle = "rgba(200, 255, 215, " + (0.95 * flicker).toFixed(3) + ")";
+      ctx.strokeStyle = "hsla(" + hue + ", 100%, 90%, " + (0.95 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
 
       ctx.restore();
@@ -536,7 +591,7 @@
             formB = (formB + 1 + Math.floor(Math.random() * (NFORMS - 1))) % NFORMS;
             morph = 0;
           }
-          if (morph < 1) morph = Math.min(1, morph + dt * 0.35);
+          if (morph < 1) morph = Math.min(1, morph + dt * 0.25);
 
           // Gentle breathing, swelling slightly with the music.
           breathe = 1 + 0.035 * Math.sin(t * 0.31) + energy * 0.35 * react;
