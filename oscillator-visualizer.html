@@ -113,6 +113,7 @@
       margin-top: 12px;
     }
     .text-btn:hover { background: rgba(77, 255, 136, 0.15); }
+    .text-btn.rec { color: #ff5a5a; border-color: rgba(255, 90, 90, 0.5); }
   </style>
 </head>
 <body>
@@ -122,7 +123,8 @@
     <div class="drop-hint-inner">
       <div class="logo">OSCILLOSCOPE</div>
       <p>Drop an MP3 anywhere, or click to choose a file</p>
-      <p class="sub">Stereo tracks draw the best figures. Audio stays in your browser.</p>
+      <p class="sub">Audio stays in your browser.</p>
+      <p class="sub">Keys 1–0 switch shapes · ← → shape detail · ↑ ↓ audio · space play/pause</p>
     </div>
   </div>
 
@@ -152,6 +154,7 @@
       </label>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
+      <button id="recBtn" class="text-btn">● Record</button>
     </div>
   </div>
 
@@ -181,12 +184,14 @@
     const hueInput = document.getElementById("hue");
     const newFileBtn = document.getElementById("newFileBtn");
     const fsBtn = document.getElementById("fsBtn");
+    const recBtn = document.getElementById("recBtn");
 
     // ---- Audio ----
     let audioCtx = null;
     let splitter = null;
     let analyserL = null, analyserR = null;
     let scopeL = null, scopeR = null;
+    let recDest = null; // audio tap for the video recorder
 
     let audioBuffer = null;
     let sourceNode = null;
@@ -206,6 +211,7 @@
       splitter.connect(analyserR, 1);
       scopeL = new Float32Array(analyserL.fftSize);
       scopeR = new Float32Array(analyserR.fftSize);
+      recDest = audioCtx.createMediaStreamDestination();
     }
 
     const duration = () => (audioBuffer ? audioBuffer.duration : 0);
@@ -235,6 +241,7 @@
       sourceNode.buffer = audioBuffer;
       sourceNode.connect(audioCtx.destination); // sound
       sourceNode.connect(splitter);             // scope data (L/R)
+      sourceNode.connect(recDest);              // recorder audio tap
       sourceNode.onended = () => {
         isPlaying = false;
         pausedAt = duration();
@@ -328,6 +335,34 @@
       else document.exitFullscreen();
     });
 
+    // Record the canvas + audio to a downloadable .webm video.
+    let recorder = null, recChunks = [];
+    recBtn.addEventListener("click", () => {
+      if (recorder) { recorder.stop(); return; }
+      initAudio();
+      const stream = canvas.captureStream(60);
+      recDest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr));
+      const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+        ? "video/webm;codecs=vp9,opus" : "video/webm";
+      recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8000000 });
+      recChunks = [];
+      recorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(recChunks, { type: "video/webm" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "oscilloscope.webm";
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        recorder = null;
+        recBtn.textContent = "● Record";
+        recBtn.classList.remove("rec");
+      };
+      recorder.start();
+      recBtn.textContent = "■ Stop & save";
+      recBtn.classList.add("rec");
+    });
+
     let idleTimer = null;
     function poke() {
       ui.classList.remove("idle");
@@ -367,15 +402,18 @@
     let nextEvent = 0;      // time of the next random pace change
     let breathe = 1;        // breathing zoom
 
-    // Shape morphing: the line eases from one 3D form to another every ~30s.
-    let formA = 0, formB = 0, morph = 1, nextShape = 0;
-    const NFORMS = 10;
+    // Shape morphing: forms are picked with the number keys 1–0 and the line
+    // eases fluidly from the old form to the new one.
+    let formA = 0, formB = 0, morph = 1;
+
+    // Bloom: a slow-attack swell + brightening triggered by strong hits.
+    let fastE = 0, bloom = 0, bloomTarget = 0, bloomGate = 0;
 
     // Waveform smoothed along its length and blended across frames, so the
     // line's displacement glides instead of jittering.
     let smoothBuf = null, scratchBuf = null;
 
-    function drawScope(sens, energy, flicker, motion, react) {
+    function drawScope(sens, energy, flicker, motion, react, bloom) {
       const n = scopeL.length;
       const TWO_PI = Math.PI * 2;
       const PI = Math.PI;
@@ -480,6 +518,7 @@
       const A = [0, 0, 0], B = [0, 0, 0];
       const ease = morph * morph * (3 - 2 * morph); // smoothstep morph easing
       const cy = Math.cos(rot), sy = Math.sin(rot); // shared yaw spin
+      const persp = baseR * 3.2;                    // camera distance
       const pts = [];
       for (let i = 0; i < n; i += 4) {
         const p = i / n;
@@ -492,20 +531,32 @@
           y3 += (B[1] - y3) * ease;
           z3 += (B[2] - z3) * ease;
         }
-        // Yaw the blended point, then tilt, then drop depth (ortho).
+        // Yaw, then tilt — keeping the depth coordinate for perspective
+        // projection and near/far shading.
         const xr = x3 * cy + z3 * sy;
         const zr = -x3 * sy + z3 * cy;
-        pts.push(xr, y3 * ct - zr * st);
+        const yt = y3 * ct - zr * st;
+        const zd = y3 * st + zr * ct;
+        const f = persp / Math.max(persp * 0.4, persp - zd);
+        pts.push(xr * f, yt * f, Math.max(0, Math.min(1, zd / baseR * 0.5 + 0.5)));
       }
 
-      // Quadratic midpoint smoothing: the stroke curves through segment
-      // midpoints with the samples as control points — no hard corners.
-      const path = new Path2D();
-      const m = pts.length / 2;
-      path.moveTo(pts[0], pts[1]);
+      // Quadratic midpoint smoothing (no hard corners), split into depth bands
+      // so nearer parts of the line draw thicker and brighter than farther
+      // ones — that's what makes the figure read as truly 3D.
+      const NB = 6;
+      const bands = [];
+      for (let b = 0; b < NB; b++) bands.push(new Path2D());
+      const m = pts.length / 3;
+      let prevB = -1;
       for (let k = 1; k < m - 1; k++) {
-        const x1 = pts[2 * k], y1 = pts[2 * k + 1];
-        path.quadraticCurveTo(x1, y1, (x1 + pts[2 * k + 2]) / 2, (y1 + pts[2 * k + 3]) / 2);
+        const x1 = pts[3 * k], y1 = pts[3 * k + 1];
+        const b = Math.min(NB - 1, Math.floor(pts[3 * k + 2] * NB));
+        if (b !== prevB) {
+          bands[b].moveTo((pts[3 * (k - 1)] + x1) / 2, (pts[3 * (k - 1) + 1] + y1) / 2);
+          prevB = b;
+        }
+        bands[b].quadraticCurveTo(x1, y1, (x1 + pts[3 * (k + 1)]) / 2, (y1 + pts[3 * (k + 1) + 1]) / 2);
       }
 
       ctx.save();
@@ -521,19 +572,28 @@
       const hue = parseFloat(hueInput.value);
       const sat = Math.min(100, (hue / 14) * 100);
       const glowL = 58 + (100 - sat) * 0.25; // white end glows a touch brighter
+      const swell = 1 + bloom * 0.35;        // bloom brightens + thickens
 
-      // Colored glow underneath...
-      ctx.lineWidth = (2.2 + energy * 2.2 * react) * DPR;
-      ctx.shadowBlur = 16 * DPR;
-      ctx.shadowColor = "hsla(" + hue + ", " + sat + "%, " + glowL + "%, 0.9)";
-      ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, " + (glowL + 4) + "%, " + (0.5 * flicker).toFixed(3) + ")";
-      ctx.stroke(path);
+      // Far bands first, near bands last; each gets a glow pass and a hot
+      // near-white core, scaled by its depth factor.
+      for (let b = 0; b < NB; b++) {
+        const df = (b + 0.5) / NB; // 0 = far .. 1 = near
+        const wf = 0.55 + 0.9 * df;
+        const af = 0.35 + 0.75 * df;
 
-      // ...hot near-white core on top, faintly tinted toward the hue.
-      ctx.lineWidth = (0.9 + energy * 0.8 * react) * DPR;
-      ctx.shadowBlur = 5 * DPR;
-      ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, 90%, " + (0.95 * flicker).toFixed(3) + ")";
-      ctx.stroke(path);
+        ctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * swell * DPR;
+        ctx.shadowBlur = 16 * df * swell * DPR;
+        ctx.shadowColor = "hsla(" + hue + ", " + sat + "%, " + glowL + "%, 0.9)";
+        ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, " + (glowL + 4) + "%, " +
+          Math.min(1, 0.5 * flicker * af * swell).toFixed(3) + ")";
+        ctx.stroke(bands[b]);
+
+        ctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * swell * DPR;
+        ctx.shadowBlur = 5 * df * DPR;
+        ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, 90%, " +
+          Math.min(1, 0.95 * flicker * (0.5 + 0.5 * df) * swell).toFixed(3) + ")";
+        ctx.stroke(bands[b]);
+      }
 
       ctx.restore();
     }
@@ -570,7 +630,8 @@
           // loud passages whip the line around into a tangle of loops.
           let sum = 0, cnt = 0;
           for (let i = 0; i < n; i += 4) { const v = scopeL[i]; sum += v * v; cnt++; }
-          energy += (Math.sqrt(sum / cnt) - energy) * 0.05;
+          const rms = Math.sqrt(sum / cnt);
+          energy += (rms - energy) * 0.05;
 
           // Every few seconds pick a new pace at random: nearly still, fast, or
           // reversed. This drift is what carries it from stable to crazy.
@@ -596,17 +657,21 @@
           // Steady spin; loudness only speeds it up as far as Audio allows.
           rot += (0.3 + energy * 1.1 * react) * slow * dt;
 
-          // Switch to a new (different) form roughly every 30s, easing ~3s.
-          if (t > nextShape) {
-            nextShape = t + 25 + Math.random() * 10;
-            formA = formB;
-            formB = (formB + 1 + Math.floor(Math.random() * (NFORMS - 1))) % NFORMS;
-            morph = 0;
-          }
-          if (morph < 1) morph = Math.min(1, morph + dt * 0.25);
+          // Shapes are picked with the number keys 1–0; the morph eases ~3s.
+          if (morph < 1) morph = Math.min(1, morph + dt * 0.35);
 
-          // Gentle breathing, swelling slightly with the music.
-          breathe = 1 + 0.035 * Math.sin(t * 0.31) + energy * 0.35 * react;
+          // Bloom: a fast envelope spots strong hits; the swell rises over
+          // ~half a second then relaxes — drama without shake. Gated by Audio.
+          fastE += (rms - fastE) * 0.5;
+          if (fastE > energy * 1.5 && fastE > 0.06 && t > bloomGate) {
+            bloomTarget = 1;
+            bloomGate = t + 0.5;
+          }
+          bloomTarget *= Math.exp(-dt * 1.4);
+          bloom += (bloomTarget - bloom) * dt * 5;
+
+          // Gentle breathing, swelling with the music and the bloom.
+          breathe = 1 + 0.035 * Math.sin(t * 0.31) + (energy * 0.35 + bloom * 0.3) * react;
 
           const sens = parseFloat(sensitivityInput.value);
 
@@ -617,7 +682,7 @@
 
           // Barely-there brightness shimmer — slow, never strobing.
           const flicker = 0.97 + 0.03 * Math.sin(t * 2.6 + Math.sin(t * 0.9) * 2);
-          drawScope(sens, energy, flicker, motion, react);
+          drawScope(sens, energy, flicker, motion, react, bloom);
         } else {
           ctx.fillStyle = "rgba(0,0,0,0.3)";
           ctx.fillRect(0, 0, W, H);
@@ -642,6 +707,15 @@
       else if (e.key === "ArrowLeft") { e.preventDefault(); nudge(motionInput, -0.05); }
       else if (e.key === "ArrowUp") { e.preventDefault(); nudge(reactInput, 0.05); }
       else if (e.key === "ArrowDown") { e.preventDefault(); nudge(reactInput, -0.05); }
+      else {
+        // Number keys 1–0 pick a shape directly; the line morphs to it fluidly.
+        const idx = "1234567890".indexOf(e.key);
+        if (idx !== -1 && idx !== formB) {
+          formA = formB;
+          formB = idx;
+          morph = 0;
+        }
+      }
     });
   })();
   </script>
