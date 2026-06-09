@@ -91,7 +91,7 @@
     input[type="range"].seek { flex: 1 1 auto; }
     #hue {
       background: linear-gradient(90deg,
-        hsl(0,100%,55%), hsl(60,100%,55%), hsl(120,100%,55%),
+        #fff, hsl(20,100%,55%), hsl(60,100%,55%), hsl(120,100%,55%),
         hsl(180,100%,55%), hsl(240,100%,55%), hsl(300,100%,55%), hsl(360,100%,55%));
     }
     input[type="range"]::-webkit-slider-thumb {
@@ -373,7 +373,7 @@
 
     // Waveform smoothed along its length and blended across frames, so the
     // line's displacement glides instead of jittering.
-    let smoothBuf = null;
+    let smoothBuf = null, scratchBuf = null;
 
     function drawScope(sens, energy, flicker, motion, react) {
       const n = scopeL.length;
@@ -385,7 +385,7 @@
       // much the sound displaces the line: 0 = fully contained clean form,
       // 1 = full distortion like before.
       const loops = 1 + motion * 14;
-      const amp = (0.3 + Math.min(energy, 0.5)) * react;
+      const amp = (0.2 + Math.min(energy, 0.3)) * react;
       const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
       const ct = Math.cos(tilt), st = Math.sin(tilt);
 
@@ -483,7 +483,7 @@
       const pts = [];
       for (let i = 0; i < n; i += 4) {
         const p = i / n;
-        const s = smoothBuf[i] * 2.2; // smoothed signal (boosted to keep depth)
+        const s = smoothBuf[i] * 3.2; // smoothed signal (boosted to keep depth)
         formPoint(formA, p, s, A);
         let x3 = A[0], y3 = A[1], z3 = A[2];
         if (ease < 1) {               // ease between the old and new form
@@ -516,18 +516,23 @@
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
 
-      // Colored glow underneath (hue from the Color slider, green by default)...
+      // Color slider: far left fades to pure white, then the full hue wheel.
+      // Green (140) is the default.
       const hue = parseFloat(hueInput.value);
-      ctx.lineWidth = (2.2 + energy * 4 * react) * DPR;
+      const sat = Math.min(100, (hue / 14) * 100);
+      const glowL = 58 + (100 - sat) * 0.25; // white end glows a touch brighter
+
+      // Colored glow underneath...
+      ctx.lineWidth = (2.2 + energy * 2.2 * react) * DPR;
       ctx.shadowBlur = 16 * DPR;
-      ctx.shadowColor = "hsla(" + hue + ", 100%, 58%, 0.9)";
-      ctx.strokeStyle = "hsla(" + hue + ", 100%, 62%, " + (0.5 * flicker).toFixed(3) + ")";
+      ctx.shadowColor = "hsla(" + hue + ", " + sat + "%, " + glowL + "%, 0.9)";
+      ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, " + (glowL + 4) + "%, " + (0.5 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
 
       // ...hot near-white core on top, faintly tinted toward the hue.
-      ctx.lineWidth = (0.9 + energy * 1.4 * react) * DPR;
+      ctx.lineWidth = (0.9 + energy * 0.8 * react) * DPR;
       ctx.shadowBlur = 5 * DPR;
-      ctx.strokeStyle = "hsla(" + hue + ", 100%, 90%, " + (0.95 * flicker).toFixed(3) + ")";
+      ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, 90%, " + (0.95 * flicker).toFixed(3) + ")";
       ctx.stroke(path);
 
       ctx.restore();
@@ -545,20 +550,27 @@
           const n = scopeL.length;
           t += dt;
 
-          // Fluidity: low-pass the waveform along its length, then blend with
-          // the previous frame so the displacement flows rather than twitching.
-          if (!smoothBuf) smoothBuf = new Float32Array(n);
+          // Fluidity: low-pass the waveform along its length in BOTH directions
+          // (symmetric, so peaks round off without dragging sideways), then
+          // blend gently with the previous frame so displacement drifts like
+          // liquid instead of twitching with every sample.
+          if (!smoothBuf) { smoothBuf = new Float32Array(n); scratchBuf = new Float32Array(n); }
           let acc = 0;
           for (let i = 0; i < n; i++) {
-            acc += (((scopeL[i] + scopeR[i]) * 0.5) - acc) * 0.12;
-            smoothBuf[i] += (acc - smoothBuf[i]) * 0.3;
+            acc += (((scopeL[i] + scopeR[i]) * 0.5) - acc) * 0.06;
+            scratchBuf[i] = acc;
+          }
+          acc = 0;
+          for (let i = n - 1; i >= 0; i--) {
+            acc += (scratchBuf[i] - acc) * 0.06;
+            smoothBuf[i] += (acc - smoothBuf[i]) * 0.12;
           }
 
           // Track loudness (RMS). Quiet passages settle into one calm line;
           // loud passages whip the line around into a tangle of loops.
           let sum = 0, cnt = 0;
           for (let i = 0; i < n; i += 4) { const v = scopeL[i]; sum += v * v; cnt++; }
-          energy += (Math.sqrt(sum / cnt) - energy) * 0.12;
+          energy += (Math.sqrt(sum / cnt) - energy) * 0.05;
 
           // Every few seconds pick a new pace at random: nearly still, fast, or
           // reversed. This drift is what carries it from stable to crazy.
@@ -569,7 +581,7 @@
                        : r < 0.70 ? 0.9 + Math.random() * 0.8
                        :          -(0.6 + Math.random() * 0.8);
           }
-          slow += (slowTarget - slow) * dt * 1.0;
+          slow += (slowTarget - slow) * dt * 0.4;
 
           // Rotation precesses the line; with long persistence its past
           // positions stack into the looping circle. Loudness speeds it up, and
@@ -582,7 +594,7 @@
           // Halve the Audio range: the slider's full right is the old 50%.
           const react = parseFloat(reactInput.value) * 0.5;
           // Steady spin; loudness only speeds it up as far as Audio allows.
-          rot += (0.3 + energy * 1.8 * react) * slow * dt;
+          rot += (0.3 + energy * 1.1 * react) * slow * dt;
 
           // Switch to a new (different) form roughly every 30s, easing ~3s.
           if (t > nextShape) {
@@ -603,8 +615,8 @@
           ctx.fillStyle = "#000";
           ctx.fillRect(0, 0, W, H);
 
-          // Subtle analog brightness flicker.
-          const flicker = 0.9 + 0.1 * Math.sin(t * 7.3 + Math.sin(t * 2.1) * 2);
+          // Barely-there brightness shimmer — slow, never strobing.
+          const flicker = 0.97 + 0.03 * Math.sin(t * 2.6 + Math.sin(t * 0.9) * 2);
           drawScope(sens, energy, flicker, motion, react);
         } else {
           ctx.fillStyle = "rgba(0,0,0,0.3)";
