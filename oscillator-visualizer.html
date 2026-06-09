@@ -159,6 +159,7 @@
       </label>
       <button id="autoBtn" class="text-btn">Auto</button>
       <button id="mirrorBtn" class="text-btn">Mirror</button>
+      <button id="duetBtn" class="text-btn">Duet</button>
       <button id="backBtn" class="text-btn on">Backdrop</button>
       <button id="micBtn" class="text-btn">Mic</button>
       <button id="hushBtn" class="text-btn">Quiet dot</button>
@@ -195,6 +196,7 @@
     const blendInput = document.getElementById("blend");
     const autoBtn = document.getElementById("autoBtn");
     const mirrorBtn = document.getElementById("mirrorBtn");
+    const duetBtn = document.getElementById("duetBtn");
     const backBtn = document.getElementById("backBtn");
     const micBtn = document.getElementById("micBtn");
     const hushBtn = document.getElementById("hushBtn");
@@ -208,6 +210,10 @@
     let analyserL = null, analyserR = null;
     let scopeL = null, scopeR = null;
     let recDest = null; // audio tap for the video recorder
+    // Duet voice: a low-passed copy of the signal feeds its own analyser, so
+    // a second line can dance to just the bass while the main line keeps the
+    // full mix. `tap` is the hub every source connects through.
+    let tap = null, filtLow = null, analyserVa = null, scopeVa = null;
 
     let audioBuffer = null;
     let sourceNode = null;
@@ -229,6 +235,16 @@
       scopeR = new Float32Array(analyserR.fftSize);
       freqBuf = new Uint8Array(analyserL.frequencyBinCount);
       recDest = audioCtx.createMediaStreamDestination();
+      tap = audioCtx.createGain();
+      tap.connect(splitter);
+      filtLow = audioCtx.createBiquadFilter();
+      filtLow.type = "lowpass";
+      filtLow.frequency.value = 280;
+      analyserVa = audioCtx.createAnalyser();
+      analyserVa.fftSize = 2048;
+      tap.connect(filtLow);
+      filtLow.connect(analyserVa);
+      scopeVa = new Float32Array(analyserVa.fftSize);
     }
 
     const duration = () => (audioBuffer ? audioBuffer.duration : 0);
@@ -258,7 +274,7 @@
       sourceNode = audioCtx.createBufferSource();
       sourceNode.buffer = audioBuffer;
       sourceNode.connect(audioCtx.destination); // sound
-      sourceNode.connect(splitter);             // scope data (L/R)
+      sourceNode.connect(tap);                  // scope + duet analysers
       sourceNode.connect(recDest);              // recorder audio tap
       sourceNode.onended = () => {
         isPlaying = false;
@@ -313,7 +329,7 @@
         stopLive();
         liveStream = stream;
         liveNode = audioCtx.createMediaStreamSource(stream);
-        liveNode.connect(splitter);
+        liveNode.connect(tap);
         liveNode.connect(recDest);
         stream.getAudioTracks()[0].onended = () => stopLive();
         nowPlaying.textContent = "🎙 Live — microphone";
@@ -521,7 +537,17 @@
     const NSHAPES = 14;
     let formA = 0, formB = 0, morph = 1;
     let autoMode = false, lastShapeT = 0; // auto-VJ: morph on hits/lulls
-    let mirrorOn = false, backdropOn = true;
+    let mirrorOn = false, backdropOn = true, duetOn = false;
+
+    // Beat lock: onset intervals are folded into a pulse-period estimate; a
+    // phase ticks along it and `beatGain` (gated by confidence + the Audio
+    // slider) lets motion ride the beat instead of just reacting to level.
+    let beatPeriod = 0.5, lastOnsetT = -10, beatPhase = 0, beatConf = 0;
+    let beatPulse = 0, beatGain = 0;
+
+    // Tension & release: builds coil the line tighter; the next strong hit
+    // springs it open.
+    let tension = 0, releaseEnv = 0, energyVslow = 0;
 
     // Bloom: a slow-attack swell + brightening triggered by strong hits.
     let fastE = 0, bloom = 0, bloomTarget = 0, bloomGate = 0;
@@ -564,7 +590,7 @@
 
     // Waveform smoothed along its length and blended across frames, so the
     // line's displacement glides instead of jittering.
-    let smoothBuf = null, scratchBuf = null;
+    let smoothBuf = null, scratchBuf = null, smoothBufV = null;
 
     function drawScope(sens, energy, flicker, motion, react, bloom) {
       const n = scopeL.length;
@@ -579,12 +605,17 @@
       // coils, mids twist the form, treble thickens the stroke. All slow
       // envelopes, so the shape itself re-forms with the song.
       const struct = react * 2;
-      const loops = (1 + motion * 14) * (1 + (bassS - 0.25) * 0.9 * struct);
+      // Tension coils the line tighter while a build rises; the release on
+      // the drop springs it open past normal before settling.
+      const tenseK = 1 + (tension * 0.7 - releaseEnv * 0.25) * struct;
+      const coil = 1 - tension * 0.12 * struct + releaseEnv * 0.2 * struct;
+      const loopsBase = (1 + motion * 14) * (1 + (bassS - 0.25) * 0.9 * struct) * tenseK;
       const twistK = midS * 1.6 * struct;
       const thickK = 1 + trebS * 0.9 * struct;
       const amp = (0.2 + Math.min(energy, 0.3)) * react;
       const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
       const ct = Math.cos(tilt), st = Math.sin(tilt);
+      let loops = loopsBase; // formPoint reads this; buildBands sets it per line
 
       // The 3D forms the line can take. Each maps path position p (0..1) and
       // the audio sample s to a point [x,y,z]; `a` is the audio displacement.
@@ -717,59 +748,81 @@
         out[0] = x; out[1] = y; out[2] = z;
       }
 
-      const A = [0, 0, 0], B = [0, 0, 0];
       // Smoothstep morph easing, capped by the Blend slider — at 1 a morph
       // completes into the new form; below 1 the line holds a permanent
       // in-between hybrid of the two shapes.
       const ease = (morph * morph * (3 - 2 * morph)) * parseFloat(blendInput.value);
-      const cy = Math.cos(rot), sy = Math.sin(rot); // shared yaw spin
-      const persp = baseR * 3.2;                    // camera distance
-      const pts = [];
-      for (let i = 0; i < n; i += 8) {
-        const p = i / n;
-        const s = smoothBuf[i] * 3.2; // smoothed signal (boosted to keep depth)
-        formPoint(formA, p, s, A);
-        let x3 = A[0], y3 = A[1], z3 = A[2];
-        if (ease > 0) {               // ease between the old and new form
-          formPoint(formB, p, s, B);
-          x3 += (B[0] - x3) * ease;
-          y3 += (B[1] - y3) * ease;
-          z3 += (B[2] - z3) * ease;
-        }
-        // Mid frequencies twist the form around its vertical axis.
-        if (twistK) {
-          const tw = twistK * (y3 / baseR);
-          const cw = Math.cos(tw), sw = Math.sin(tw);
-          const xt = x3 * cw + z3 * sw;
-          z3 = -x3 * sw + z3 * cw;
-          x3 = xt;
-        }
-        // Yaw, then tilt — keeping the depth coordinate for perspective
-        // projection and near/far shading.
-        const xr = x3 * cy + z3 * sy;
-        const zr = -x3 * sy + z3 * cy;
-        const yt = y3 * ct - zr * st;
-        const zd = y3 * st + zr * ct;
-        const f = persp / Math.max(persp * 0.4, persp - zd);
-        pts.push(xr * f, yt * f, Math.max(0, Math.min(1, zd / baseR * 0.5 + 0.5)));
-      }
-
-      // Quadratic midpoint smoothing (no hard corners), split into depth bands
-      // so nearer parts of the line draw thicker and brighter than farther
-      // ones — that's what makes the figure read as truly 3D.
+      const persp = baseR * 3.2; // camera distance
       const NB = 4;
-      const bands = [];
-      for (let b = 0; b < NB; b++) bands.push(new Path2D());
-      const m = pts.length / 3;
-      let prevB = -1;
-      for (let k = 1; k < m - 1; k++) {
-        const x1 = pts[3 * k], y1 = pts[3 * k + 1];
-        const b = Math.min(NB - 1, Math.floor(pts[3 * k + 2] * NB));
-        if (b !== prevB) {
-          bands[b].moveTo((pts[3 * (k - 1)] + x1) / 2, (pts[3 * (k - 1) + 1] + y1) / 2);
-          prevB = b;
+
+      // Quiet dot: in hush any shape first resolves into one clean ring in
+      // screen space (hb 0->1), then the ring itself contracts to ember size.
+      const hb0 = Math.min(1, hush / 0.6);
+      const hb = hb0 * hb0 * (3 - 2 * hb0);
+      const ringR = baseR * 0.22 *
+        Math.pow(1 - Math.min(1, Math.max(0, (hush - 0.45) / 0.55)), 1.4) + 2.5 * DPR;
+
+      // Build one line's depth-banded paths from a waveform buffer, with its
+      // own yaw, winding count, and scale — used for the main line and the
+      // duet voice.
+      function buildBands(buf, yawAngle, loopsLocal, sc) {
+        loops = loopsLocal;
+        const cy = Math.cos(yawAngle), sy = Math.sin(yawAngle);
+        const A = [0, 0, 0], B = [0, 0, 0];
+        const pts = [];
+        for (let i = 0; i < n; i += 8) {
+          const p = i / n;
+          const s = buf[i] * 3.2 * (1 - hb); // hush also stills the surface
+          formPoint(formA, p, s, A);
+          let x3 = A[0], y3 = A[1], z3 = A[2];
+          if (ease > 0) {               // ease between the old and new form
+            formPoint(formB, p, s, B);
+            x3 += (B[0] - x3) * ease;
+            y3 += (B[1] - y3) * ease;
+            z3 += (B[2] - z3) * ease;
+          }
+          // Mid frequencies twist the form around its vertical axis.
+          if (twistK) {
+            const tw = twistK * (y3 / baseR);
+            const cw = Math.cos(tw), sw = Math.sin(tw);
+            const xt = x3 * cw + z3 * sw;
+            z3 = -x3 * sw + z3 * cw;
+            x3 = xt;
+          }
+          // Yaw, then tilt — keeping the depth coordinate for perspective
+          // projection and near/far shading.
+          const xr = x3 * cy + z3 * sy;
+          const zr = -x3 * sy + z3 * cy;
+          const yt = y3 * ct - zr * st;
+          const zd = y3 * st + zr * ct;
+          const f = (persp / Math.max(persp * 0.4, persp - zd)) * sc;
+          let px = xr * f, py = yt * f;
+          let pd = Math.max(0, Math.min(1, zd / baseR * 0.5 + 0.5));
+          if (hb > 0) { // blend toward the resolving ring, in screen space
+            const ra = p * TWO_PI;
+            px += (Math.cos(ra) * ringR - px) * hb;
+            py += (Math.sin(ra) * ringR - py) * hb;
+            pd += (0.5 - pd) * hb;
+          }
+          pts.push(px, py, pd);
         }
-        bands[b].quadraticCurveTo(x1, y1, (x1 + pts[3 * (k + 1)]) / 2, (y1 + pts[3 * (k + 1) + 1]) / 2);
+
+        // Quadratic midpoint smoothing (no hard corners), split into depth
+        // bands so nearer parts draw thicker and brighter than farther ones.
+        const bands = [];
+        for (let b = 0; b < NB; b++) bands.push(new Path2D());
+        const m = pts.length / 3;
+        let prevB = -1;
+        for (let k = 1; k < m - 1; k++) {
+          const x1 = pts[3 * k], y1 = pts[3 * k + 1];
+          const b = Math.min(NB - 1, Math.floor(pts[3 * k + 2] * NB));
+          if (b !== prevB) {
+            bands[b].moveTo((pts[3 * (k - 1)] + x1) / 2, (pts[3 * (k - 1) + 1] + y1) / 2);
+            prevB = b;
+          }
+          bands[b].quadraticCurveTo(x1, y1, (x1 + pts[3 * (k + 1)]) / 2, (y1 + pts[3 * (k + 1) + 1]) / 2);
+        }
+        return bands;
       }
 
       // Draw onto the line layer; the real glow is added in the composite
@@ -778,11 +831,7 @@
       lctx.save();
       lctx.translate(W / 2, H / 2);
       lctx.rotate(0.12 * Math.sin(t * 0.09)); // slow rolling sway
-      // Melt: in hush the whole figure collapses all the way into the center
-      // — whatever shape it is — and visibly becomes the dot. The pow curve
-      // makes the collapse accelerate as it approaches the middle.
-      const shrink = Math.max(0.002, Math.pow(1 - hush, 1.5));
-      lctx.scale(breathe * shrink, breathe * shrink);
+      lctx.scale(breathe * coil, breathe * coil);
       lctx.globalCompositeOperation = "lighter";
       lctx.lineJoin = "round";
       lctx.lineCap = "round";
@@ -792,52 +841,60 @@
       const hue = parseFloat(hueInput.value);
       const sat = Math.min(100, (hue / 14) * 100);
       const glowL = 58 + (100 - sat) * 0.25; // white end glows a touch brighter
-      const swell = 1 + bloom * 0.35;        // bloom brightens + thickens
-      // Stay fully visible while collapsing; only crossfade out right at the
-      // end, once the figure is already dot-sized.
-      const vis = 1 - Math.min(1, Math.max(0, (hush - 0.8) / 0.2));
+      // Bloom and the beat pulse both brighten + thicken the stroke.
+      const swell = 1 + bloom * 0.35 + beatGain * 0.15;
+      // The figure stays fully visible while resolving into the ring; only
+      // when the ring is ember-sized does it hand off to the dot.
+      const vis = 1 - Math.min(1, Math.max(0, (hush - 0.9) / 0.1));
+      const wMul = thickK * (1 - 0.45 * hb); // the ring draws delicately
 
       // Far bands first, near bands last: a colored body and a hot near-white
-      // core, scaled by each band's depth factor (and treble thickness).
-      for (let b = 0; b < NB; b++) {
-        const df = (b + 0.5) / NB; // 0 = far .. 1 = near
-        const wf = (0.55 + 0.9 * df) * thickK;
-        const af = 0.35 + 0.75 * df;
-
-        lctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * swell * DPR;
-        lctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, " + (glowL + 4) + "%, " +
-          Math.min(1, 0.55 * flicker * af * swell * vis).toFixed(3) + ")";
-        lctx.stroke(bands[b]);
-
-        lctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * swell * DPR;
-        lctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, 90%, " +
-          Math.min(1, 0.95 * flicker * (0.5 + 0.5 * df) * swell * vis).toFixed(3) + ")";
-        lctx.stroke(bands[b]);
-      }
-
-      // Mirror twin: the same figure flipped and slightly turned, drawn
-      // dimmer with a nudged hue, so the two interlock without clutter.
-      if (mirrorOn) {
-        lctx.scale(-1, 1);
-        lctx.rotate(0.5 + 0.3 * Math.sin(t * 0.05));
+      // core, scaled by each band's depth factor.
+      function strokeBands(bands, hueX, aMul) {
         for (let b = 0; b < NB; b++) {
-          const df = (b + 0.5) / NB;
-          lctx.lineWidth = (1.5 + energy * 1.4 * react) * (0.55 + 0.9 * df) * thickK * swell * DPR;
-          lctx.strokeStyle = "hsla(" + (hue + 30) + ", " + sat + "%, " + (glowL + 8) + "%, " +
-            Math.min(1, 0.32 * flicker * (0.35 + 0.75 * df) * swell * vis).toFixed(3) + ")";
+          const df = (b + 0.5) / NB; // 0 = far .. 1 = near
+          const wf = (0.55 + 0.9 * df) * wMul;
+          const af = 0.35 + 0.75 * df;
+
+          lctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * swell * DPR;
+          lctx.strokeStyle = "hsla(" + hueX + ", " + sat + "%, " + (glowL + 4) + "%, " +
+            Math.min(1, 0.55 * flicker * af * swell * vis * aMul).toFixed(3) + ")";
+          lctx.stroke(bands[b]);
+
+          lctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * swell * DPR;
+          lctx.strokeStyle = "hsla(" + hueX + ", " + sat + "%, 90%, " +
+            Math.min(1, 0.95 * flicker * (0.5 + 0.5 * df) * swell * vis * aMul).toFixed(3) + ")";
           lctx.stroke(bands[b]);
         }
       }
 
+      const mainBands = buildBands(smoothBuf, rot, loopsBase, 1);
+      strokeBands(mainBands, hue, 1);
+
+      // Duet voice: a second line dancing to just the bass — its own
+      // waveform, counter-spin, winding, and a nudged hue.
+      if (duetOn && smoothBufV) {
+        const duetBands = buildBands(smoothBufV, -rot * 0.85 + 0.7, loopsBase * 0.62, 0.94);
+        strokeBands(duetBands, hue - 45, 0.55);
+      }
+
+      // Mirror twin: the main figure flipped and slightly turned, drawn
+      // dimmer with a nudged hue, so the two interlock without clutter.
+      if (mirrorOn) {
+        lctx.scale(-1, 1);
+        lctx.rotate(0.5 + 0.3 * Math.sin(t * 0.05));
+        strokeBands(mainBands, hue + 30, 0.34);
+      }
+
       lctx.restore();
 
-      // The ember dot takes over only at the tail end of the collapse, so the
-      // shrinking line hands off into it seamlessly.
-      const dotA = Math.min(1, Math.max(0, (hush - 0.7) / 0.3));
+      // The ember dot fades in only once the ring has contracted to its size,
+      // so the line visibly becomes the dot with no pop.
+      const dotA = Math.min(1, Math.max(0, (hush - 0.85) / 0.15));
       if (dotA > 0.01) {
         lctx.save();
         lctx.globalCompositeOperation = "lighter";
-        const dr = (1.5 + 0.5 * Math.sin(t * 1.6)) * DPR;
+        const dr = (1.8 + 0.5 * Math.sin(t * 1.6)) * DPR;
         lctx.fillStyle = "hsla(" + hue + ", " + sat + "%, 85%, " + (0.9 * dotA).toFixed(3) + ")";
         lctx.beginPath();
         lctx.arc(W / 2, H / 2, dr, 0, 6.2832);
@@ -967,8 +1024,9 @@
           const motion = parseFloat(motionInput.value);
           // Halve the Audio range: the slider's full right is the old 50%.
           const react = parseFloat(reactInput.value) * 0.5;
-          // Steady spin; loudness only speeds it up as far as Audio allows.
-          rot += (0.3 + energy * 1.1 * react) * slow * dt;
+          // Steady spin; loudness speeds it up as far as Audio allows, and a
+          // confident beat gives the turn a push right on the pulse.
+          rot += (0.3 + energy * 1.1 * react) * slow * dt + beatGain * 0.5 * dt;
 
           // Shapes are picked with the number keys 1–0; the morph eases ~3s.
           if (morph < 1) morph = Math.min(1, morph + dt * 0.35);
@@ -979,9 +1037,65 @@
           if (fastE > energy * 1.5 && fastE > 0.06 && t > bloomGate) {
             bloomTarget = 1;
             bloomGate = t + 0.5;
+
+            // Beat lock: fold this onset's interval to a base pulse and pull
+            // the period estimate toward it; agreeing onsets raise confidence
+            // and re-anchor the phase, disagreeing ones erode it.
+            const iv = t - lastOnsetT;
+            lastOnsetT = t;
+            if (iv > 0.22 && iv < 2.0) {
+              let cand = iv;
+              while (cand > 0.85) cand /= 2;
+              while (cand < 0.3) cand *= 2;
+              if (Math.abs(cand - beatPeriod) / beatPeriod < 0.18) {
+                beatPeriod += (cand - beatPeriod) * 0.25;
+                beatConf = Math.min(1, beatConf + 0.25);
+                const err = beatPhase % 1;
+                beatPhase -= (err < 0.5 ? err : err - 1) * 0.5;
+              } else if ((beatConf -= 0.12) <= 0) {
+                beatPeriod = cand;
+                beatConf = 0.2;
+              }
+            }
+
+            // A strong hit during a build is the drop: spring the coil open.
+            if (tension > 0.25) {
+              releaseEnv = Math.min(1, releaseEnv + tension * 0.9);
+              tension *= 0.25;
+            }
           }
           bloomTarget *= Math.exp(-dt * 1.4);
           bloom += (bloomTarget - bloom) * dt * 5;
+
+          // Beat phase ticks along the period; the pulse spikes at each
+          // predicted beat and the motion rides it only with confidence.
+          beatPhase += dt / beatPeriod;
+          beatConf = Math.max(0, beatConf - dt * 0.05);
+          beatPulse += (Math.exp(-5 * (beatPhase % 1)) - beatPulse) * Math.min(1, dt * 14);
+          beatGain = beatPulse * beatConf * react * 2;
+
+          // Tension rises while the track builds above its long-term level,
+          // and leaks away slowly if the build fizzles.
+          energyVslow += (rms - energyVslow) * 0.006;
+          tension = Math.min(1, Math.max(0,
+            tension + (Math.max(0, energy - energyVslow * 1.18) * 2.0 - 0.05) * dt));
+          releaseEnv *= Math.exp(-dt * 1.5);
+
+          // Duet voice: smooth the bass-only waveform the same symmetric way.
+          if (duetOn && analyserVa) {
+            analyserVa.getFloatTimeDomainData(scopeVa);
+            if (!smoothBufV) smoothBufV = new Float32Array(n);
+            let accV = 0;
+            for (let i = 0; i < n; i++) {
+              accV += (scopeVa[i] - accV) * 0.06;
+              scratchBuf[i] = accV;
+            }
+            accV = 0;
+            for (let i = n - 1; i >= 0; i--) {
+              accV += (scratchBuf[i] - accV) * 0.06;
+              smoothBufV[i] += (accV - smoothBufV[i]) * 0.12;
+            }
+          }
 
           // Auto mode: morph to a new shape on a strong hit or a quiet lull —
           // never sooner than ~14s after the last change, always within ~45s.
@@ -995,8 +1109,8 @@
             }
           }
 
-          // Gentle breathing, swelling with the music and the bloom.
-          breathe = 1 + 0.035 * Math.sin(t * 0.31) + (energy * 0.35 + bloom * 0.3) * react;
+          // Gentle breathing, swelling with the music, the bloom, and the beat.
+          breathe = 1 + 0.035 * Math.sin(t * 0.31) + (energy * 0.35 + bloom * 0.3) * react + beatGain * 0.04;
 
           const sens = parseFloat(sensitivityInput.value);
 
@@ -1088,6 +1202,10 @@
     mirrorBtn.addEventListener("click", () => {
       mirrorOn = !mirrorOn;
       mirrorBtn.classList.toggle("on", mirrorOn);
+    });
+    duetBtn.addEventListener("click", () => {
+      duetOn = !duetOn;
+      duetBtn.classList.toggle("on", duetOn);
     });
     backBtn.addEventListener("click", () => {
       backdropOn = !backdropOn;
