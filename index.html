@@ -361,6 +361,10 @@
     let formA = 0, formB = 0, morph = 1, nextShape = 0;
     const NFORMS = 6;
 
+    // Waveform smoothed along its length and blended across frames, so the
+    // line's displacement glides instead of jittering.
+    let smoothBuf = null;
+
     function drawScope(sens, energy, flicker, motion, react) {
       const n = scopeL.length;
       const TWO_PI = Math.PI * 2;
@@ -424,25 +428,36 @@
       }
 
       const A = [0, 0, 0], B = [0, 0, 0];
-      const path = new Path2D();
-      for (let i = 0; i < n; i++) {
+      const ease = morph * morph * (3 - 2 * morph); // smoothstep morph easing
+      const pts = [];
+      for (let i = 0; i < n; i += 4) {
         const p = i / n;
-        const s = (scopeL[i] + scopeR[i]) * 0.5;
+        const s = smoothBuf[i] * 2.2; // smoothed signal (boosted to keep depth)
         formPoint(formA, p, s, A);
         let x3 = A[0], y3 = A[1], z3 = A[2];
-        if (morph < 1) {              // ease between the old and new form
+        if (ease < 1) {               // ease between the old and new form
           formPoint(formB, p, s, B);
-          x3 += (B[0] - x3) * morph;
-          y3 += (B[1] - y3) * morph;
-          z3 += (B[2] - z3) * morph;
+          x3 += (B[0] - x3) * ease;
+          y3 += (B[1] - y3) * ease;
+          z3 += (B[2] - z3) * ease;
         }
-        const x = x3;
-        const y = y3 * ct - z3 * st;  // tilt, then drop depth (ortho)
-        if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+        pts.push(x3, y3 * ct - z3 * st); // tilt, then drop depth (ortho)
+      }
+
+      // Quadratic midpoint smoothing: the stroke curves through segment
+      // midpoints with the samples as control points — no hard corners.
+      const path = new Path2D();
+      const m = pts.length / 2;
+      path.moveTo(pts[0], pts[1]);
+      for (let k = 1; k < m - 1; k++) {
+        const x1 = pts[2 * k], y1 = pts[2 * k + 1];
+        path.quadraticCurveTo(x1, y1, (x1 + pts[2 * k + 2]) / 2, (y1 + pts[2 * k + 3]) / 2);
       }
 
       ctx.save();
       ctx.translate(W / 2, H / 2);
+      ctx.rotate(0.12 * Math.sin(t * 0.09)); // slow rolling sway
+      ctx.scale(breathe, breathe);
       ctx.globalCompositeOperation = "lighter";
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
@@ -475,6 +490,15 @@
           const n = scopeL.length;
           t += dt;
 
+          // Fluidity: low-pass the waveform along its length, then blend with
+          // the previous frame so the displacement flows rather than twitching.
+          if (!smoothBuf) smoothBuf = new Float32Array(n);
+          let acc = 0;
+          for (let i = 0; i < n; i++) {
+            acc += (((scopeL[i] + scopeR[i]) * 0.5) - acc) * 0.12;
+            smoothBuf[i] += (acc - smoothBuf[i]) * 0.3;
+          }
+
           // Track loudness (RMS). Quiet passages settle into one calm line;
           // loud passages whip the line around into a tangle of loops.
           let sum = 0, cnt = 0;
@@ -505,14 +529,17 @@
           // Steady spin; loudness only speeds it up as far as Audio allows.
           rot += (0.3 + energy * 1.8 * react) * slow * dt;
 
-          // Switch to a new (different) form roughly every 30s, easing ~2s.
+          // Switch to a new (different) form roughly every 30s, easing ~3s.
           if (t > nextShape) {
             nextShape = t + 25 + Math.random() * 10;
             formA = formB;
             formB = (formB + 1 + Math.floor(Math.random() * (NFORMS - 1))) % NFORMS;
             morph = 0;
           }
-          if (morph < 1) morph = Math.min(1, morph + dt * 0.5);
+          if (morph < 1) morph = Math.min(1, morph + dt * 0.35);
+
+          // Gentle breathing, swelling slightly with the music.
+          breathe = 1 + 0.035 * Math.sin(t * 0.31) + energy * 0.35 * react;
 
           const sens = parseFloat(sensitivityInput.value);
 
