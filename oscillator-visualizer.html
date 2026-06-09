@@ -388,6 +388,19 @@
     window.addEventListener("mousemove", poke);
     window.addEventListener("touchstart", poke, { passive: true });
 
+    // Slow per-band envelopes that reshape the structure of the form:
+    // bass -> coil count, mids -> twist, treble -> line thickness.
+    // (Declared before resize() runs below — accessing a let before its
+    // declaration executes is an error that would kill the whole script.)
+    let freqBuf = null;
+    let bassS = 0, midS = 0, trebS = 0;
+
+    // Render layers: the line draws on its own canvas, then gets composited
+    // with a real downscale-and-blur glow (much prettier and cheaper than
+    // per-stroke shadowBlur). Plus backdrop furniture.
+    let lineCanvas = null, lctx = null, glowCanvas = null, gctx = null;
+    let vigGrad = null, stars = [];
+
     // ---- Canvas ----
     let W = 0, H = 0, DPR = 1;
     function resize() {
@@ -445,17 +458,6 @@
 
     // Bloom: a slow-attack swell + brightening triggered by strong hits.
     let fastE = 0, bloom = 0, bloomTarget = 0, bloomGate = 0;
-
-    // Slow per-band envelopes that reshape the structure of the form:
-    // bass -> coil count, mids -> twist, treble -> line thickness.
-    let freqBuf = null;
-    let bassS = 0, midS = 0, trebS = 0;
-
-    // Render layers: the line draws on its own canvas, then gets composited
-    // with a real downscale-and-blur glow (much prettier and cheaper than
-    // per-stroke shadowBlur). Plus backdrop furniture.
-    let lineCanvas = null, lctx = null, glowCanvas = null, gctx = null;
-    let vigGrad = null, stars = [];
 
     // Lorenz attractor path, computed once and reused.
     let lorenzPts = null;
