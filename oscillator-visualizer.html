@@ -160,6 +160,8 @@
       <button id="autoBtn" class="text-btn">Auto</button>
       <button id="mirrorBtn" class="text-btn">Mirror</button>
       <button id="backBtn" class="text-btn on">Backdrop</button>
+      <button id="micBtn" class="text-btn">Mic</button>
+      <button id="tabBtn" class="text-btn">Spotify / tab audio</button>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
       <button id="recBtn" class="text-btn">● Record</button>
@@ -194,6 +196,8 @@
     const autoBtn = document.getElementById("autoBtn");
     const mirrorBtn = document.getElementById("mirrorBtn");
     const backBtn = document.getElementById("backBtn");
+    const micBtn = document.getElementById("micBtn");
+    const tabBtn = document.getElementById("tabBtn");
     const newFileBtn = document.getElementById("newFileBtn");
     const fsBtn = document.getElementById("fsBtn");
     const recBtn = document.getElementById("recBtn");
@@ -247,6 +251,7 @@
     function startPlayback(offset) {
       if (!audioBuffer) return;
       if (offset >= duration()) offset = 0;
+      stopLive();
       stopSource();
       if (audioCtx.state === "suspended") audioCtx.resume();
 
@@ -276,10 +281,71 @@
     }
 
     function togglePlay() {
+      if (liveStream) { stopLive(); return; } // space stops live capture
       if (!audioBuffer) { fileInput.click(); return; }
       if (isPlaying) pausePlayback();
       else startPlayback(pausedAt >= duration() ? 0 : pausedAt);
     }
+
+    // ---- Live input: microphone or tab/system audio (e.g. Spotify) ----
+    // Spotify's own stream is DRM-protected, so we capture the *played*
+    // audio instead: a tab/system capture or the microphone. Either feeds
+    // the same analyser pipeline; we never connect live input to the
+    // speakers (the source is already audible, and mic would feed back).
+    let liveStream = null, liveNode = null;
+
+    function stopLive() {
+      if (liveStream) {
+        liveStream.getTracks().forEach((tr) => tr.stop());
+        liveStream = null;
+      }
+      if (liveNode) { try { liveNode.disconnect(); } catch (_) {} liveNode = null; }
+      micBtn.classList.remove("on");
+      tabBtn.classList.remove("on");
+      if (!audioBuffer) nowPlaying.textContent = "—";
+    }
+
+    async function startLive(kind) {
+      try {
+        initAudio();
+        await audioCtx.resume();
+        const stream = kind === "mic"
+          ? await navigator.mediaDevices.getUserMedia({
+              audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+            })
+          : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        if (!stream.getAudioTracks().length) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          nowPlaying.textContent = "⚠ No audio in that capture — tick “Also share tab audio” when picking the tab.";
+          ui.classList.remove("hidden");
+          return;
+        }
+        pausePlayback();
+        stopLive();
+        liveStream = stream;
+        liveNode = audioCtx.createMediaStreamSource(stream);
+        liveNode.connect(splitter);
+        liveNode.connect(recDest);
+        stream.getAudioTracks()[0].onended = () => stopLive();
+        nowPlaying.textContent = kind === "mic"
+          ? "🎙 Live — microphone"
+          : "🎵 Live — tab/system audio";
+        dropHint.classList.add("hidden");
+        ui.classList.remove("hidden");
+        (kind === "mic" ? micBtn : tabBtn).classList.add("on");
+      } catch (err) {
+        nowPlaying.textContent = "⚠ Capture didn't start (permission denied or unsupported browser).";
+        ui.classList.remove("hidden");
+        console.error("live capture failed:", err);
+      }
+    }
+
+    micBtn.addEventListener("click", () => {
+      if (micBtn.classList.contains("on")) stopLive(); else startLive("mic");
+    });
+    tabBtn.addEventListener("click", () => {
+      if (tabBtn.classList.contains("on")) stopLive(); else startLive("tab");
+    });
 
     async function loadFile(file) {
       if (!file) return;
