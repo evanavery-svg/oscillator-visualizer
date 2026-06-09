@@ -114,6 +114,7 @@
     }
     .text-btn:hover { background: rgba(77, 255, 136, 0.15); }
     .text-btn.rec { color: #ff5a5a; border-color: rgba(255, 90, 90, 0.5); }
+    .text-btn.on { background: rgba(77, 255, 136, 0.22); }
   </style>
 </head>
 <body>
@@ -124,7 +125,7 @@
       <div class="logo">OSCILLOSCOPE</div>
       <p>Drop an MP3 anywhere, or click to choose a file</p>
       <p class="sub">Audio stays in your browser.</p>
-      <p class="sub">Keys 1–0 switch shapes · ← → shape detail · ↑ ↓ audio · space play/pause</p>
+      <p class="sub">Keys 1–0 + Q W E R switch shapes · ← → shape detail · ↑ ↓ audio · space play/pause</p>
     </div>
   </div>
 
@@ -152,6 +153,13 @@
         <span>Color</span>
         <input id="hue" type="range" min="0" max="360" step="1" value="140" />
       </label>
+      <label class="ctl">
+        <span>Blend</span>
+        <input id="blend" type="range" min="0" max="1" step="0.01" value="1" />
+      </label>
+      <button id="autoBtn" class="text-btn">Auto</button>
+      <button id="mirrorBtn" class="text-btn">Mirror</button>
+      <button id="backBtn" class="text-btn on">Backdrop</button>
       <button id="newFileBtn" class="text-btn">Load another</button>
       <button id="fsBtn" class="text-btn">Fullscreen</button>
       <button id="recBtn" class="text-btn">● Record</button>
@@ -182,6 +190,10 @@
     const motionInput = document.getElementById("motion");
     const reactInput = document.getElementById("react");
     const hueInput = document.getElementById("hue");
+    const blendInput = document.getElementById("blend");
+    const autoBtn = document.getElementById("autoBtn");
+    const mirrorBtn = document.getElementById("mirrorBtn");
+    const backBtn = document.getElementById("backBtn");
     const newFileBtn = document.getElementById("newFileBtn");
     const fsBtn = document.getElementById("fsBtn");
     const recBtn = document.getElementById("recBtn");
@@ -211,6 +223,7 @@
       splitter.connect(analyserR, 1);
       scopeL = new Float32Array(analyserL.fftSize);
       scopeR = new Float32Array(analyserR.fftSize);
+      freqBuf = new Uint8Array(analyserL.frequencyBinCount);
       recDest = audioCtx.createMediaStreamDestination();
     }
 
@@ -387,6 +400,27 @@
       canvas.style.height = window.innerHeight + "px";
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
+
+      // Offscreen layers for the glow pipeline.
+      lineCanvas = lineCanvas || document.createElement("canvas");
+      glowCanvas = glowCanvas || document.createElement("canvas");
+      lineCanvas.width = W; lineCanvas.height = H;
+      glowCanvas.width = Math.max(2, W >> 2); glowCanvas.height = Math.max(2, H >> 2);
+      lctx = lineCanvas.getContext("2d");
+      gctx = glowCanvas.getContext("2d");
+
+      // Vignette gradient (cached) and a fresh starfield for this size.
+      vigGrad = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.hypot(W, H) * 0.58);
+      vigGrad.addColorStop(0, "rgba(0,0,0,0)");
+      vigGrad.addColorStop(1, "rgba(0,0,0,0.55)");
+      stars = [];
+      for (let i = 0; i < 110; i++) {
+        stars.push({
+          x: Math.random() * W, y: Math.random() * H,
+          r: (0.5 + Math.random() * 1.3) * DPR,
+          ph: Math.random() * 6.28, sp: 0.15 + Math.random() * 0.6,
+        });
+      }
     }
     window.addEventListener("resize", resize);
     resize();
@@ -402,12 +436,59 @@
     let nextEvent = 0;      // time of the next random pace change
     let breathe = 1;        // breathing zoom
 
-    // Shape morphing: forms are picked with the number keys 1–0 and the line
+    // Shape morphing: forms are picked with keys 1–0 and Q W E R; the line
     // eases fluidly from the old form to the new one.
+    const NSHAPES = 14;
     let formA = 0, formB = 0, morph = 1;
+    let autoMode = false, lastShapeT = 0; // auto-VJ: morph on hits/lulls
+    let mirrorOn = false, backdropOn = true;
 
     // Bloom: a slow-attack swell + brightening triggered by strong hits.
     let fastE = 0, bloom = 0, bloomTarget = 0, bloomGate = 0;
+
+    // Slow per-band envelopes that reshape the structure of the form:
+    // bass -> coil count, mids -> twist, treble -> line thickness.
+    let freqBuf = null;
+    let bassS = 0, midS = 0, trebS = 0;
+
+    // Render layers: the line draws on its own canvas, then gets composited
+    // with a real downscale-and-blur glow (much prettier and cheaper than
+    // per-stroke shadowBlur). Plus backdrop furniture.
+    let lineCanvas = null, lctx = null, glowCanvas = null, gctx = null;
+    let vigGrad = null, stars = [];
+
+    // Lorenz attractor path, computed once and reused.
+    let lorenzPts = null;
+    function getLorenz() {
+      if (lorenzPts) return lorenzPts;
+      const N = 2400;
+      lorenzPts = new Float32Array(N * 3);
+      let x = 0.1, y = 0, z = 25;
+      for (let i = 0; i < 1500; i++) { // settle onto the attractor
+        const dx = 10 * (y - x), dy = x * (28 - z) - y, dz = x * y - (8 / 3) * z;
+        x += dx * 0.004; y += dy * 0.004; z += dz * 0.004;
+      }
+      let maxA = 0.0001;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < 3; j++) {
+          const dx = 10 * (y - x), dy = x * (28 - z) - y, dz = x * y - (8 / 3) * z;
+          x += dx * 0.004; y += dy * 0.004; z += dz * 0.004;
+        }
+        lorenzPts[i * 3] = x;
+        lorenzPts[i * 3 + 1] = z - 25;
+        lorenzPts[i * 3 + 2] = y;
+        maxA = Math.max(maxA, Math.abs(x), Math.abs(z - 25), Math.abs(y));
+      }
+      for (let i = 0; i < N * 3; i++) lorenzPts[i] /= maxA;
+      return lorenzPts;
+    }
+
+    // Superformula radius (bounded star/flower profiles).
+    function superR(ang, m, n1, n2, n3) {
+      const c = Math.abs(Math.cos(m * ang / 4));
+      const s = Math.abs(Math.sin(m * ang / 4));
+      return Math.pow(Math.pow(c, n2) + Math.pow(s, n3), -1 / n1);
+    }
 
     // Waveform smoothed along its length and blended across frames, so the
     // line's displacement glides instead of jittering.
@@ -422,7 +503,13 @@
       // "Shape" = how many times the single line winds. Audio (react) sets how
       // much the sound displaces the line: 0 = fully contained clean form,
       // 1 = full distortion like before.
-      const loops = 1 + motion * 14;
+      // Structure is also audio-mapped (gated by the same slider): bass adds
+      // coils, mids twist the form, treble thickens the stroke. All slow
+      // envelopes, so the shape itself re-forms with the song.
+      const struct = react * 2;
+      const loops = (1 + motion * 14) * (1 + (bassS - 0.25) * 0.9 * struct);
+      const twistK = midS * 1.6 * struct;
+      const thickK = 1 + trebS * 0.9 * struct;
       const amp = (0.2 + Math.min(energy, 0.3)) * react;
       const tilt = 0.6 + 0.4 * Math.sin(t * 0.13);
       const ct = Math.cos(tilt), st = Math.sin(tilt);
@@ -439,7 +526,7 @@
         switch (form) {
           case 1: { // torus
             const R = baseR * 0.68, r2 = baseR * 0.30 * (1 + a);
-            const v = p * TWO_PI * Math.max(2, Math.round(loops * 0.5));
+            const v = p * TWO_PI * Math.max(2, loops * 0.5);
             const rr = R + r2 * Math.cos(v);
             x = rr * Math.cos(th); y = r2 * Math.sin(v); z = rr * Math.sin(th);
             break;
@@ -451,7 +538,7 @@
           }
           case 3: { // lissajous knot
             const R = baseR * (1 + a * 0.5);
-            const C = Math.max(2, Math.round(loops * 0.5));
+            const C = Math.max(2, loops * 0.5);
             x = R * Math.sin(3 * p * TWO_PI);
             y = R * Math.sin(2 * p * TWO_PI + 0.9);
             z = R * Math.sin(C * p * TWO_PI + 0.4);
@@ -463,14 +550,14 @@
             break;
           }
           case 5: { // rose / flower with a depth wave
-            const k = Math.max(2, Math.round(2 + loops * 0.4));
+            const k = Math.max(2, 2 + loops * 0.4);
             const rr = baseR * (0.35 + 0.65 * Math.abs(Math.cos(k * p * TWO_PI))) * (1 + a);
-            const ang = p * TWO_PI * Math.max(1, Math.round(loops * 0.3));
+            const ang = p * TWO_PI * Math.max(1, loops * 0.3);
             x = rr * Math.cos(ang); y = rr * Math.sin(ang); z = baseR * 0.3 * Math.sin(p * TWO_PI * 3);
             break;
           }
           case 6: { // torus knot — a line tied around an invisible donut
-            const q = 3 + 2 * Math.round(loops * 0.15);
+            const q = 3 + loops * 0.3;
             const u = p * TWO_PI;
             const R = baseR * 0.34 * (1 + a);
             const rr = Math.cos(q * u) + 2;
@@ -499,11 +586,54 @@
             break;
           }
           case 9: { // infinity ribbon — a winding figure-eight band
-            const u = p * TWO_PI * Math.max(1, Math.round(loops * 0.4));
+            const u = p * TWO_PI * Math.max(1, loops * 0.4);
             const R = baseR * (1 + a);
             x = R * Math.sin(u);
             y = R * Math.sin(u) * Math.cos(u) * 0.9;
             z = R * 0.35 * Math.cos(3 * u);
+            break;
+          }
+          case 10: { // Lorenz attractor — chaos, traced as one line
+            const L = getLorenz();
+            const NL = L.length / 3;
+            const fi = p * (NL - 1.001);
+            const i0 = Math.floor(fi), fr = fi - i0;
+            const sc = baseR * 1.05 * (1 + a * 0.5);
+            x = (L[i0 * 3] + (L[i0 * 3 + 3] - L[i0 * 3]) * fr) * sc;
+            y = (L[i0 * 3 + 1] + (L[i0 * 3 + 4] - L[i0 * 3 + 1]) * fr) * sc;
+            z = (L[i0 * 3 + 2] + (L[i0 * 3 + 5] - L[i0 * 3 + 2]) * fr) * sc;
+            break;
+          }
+          case 11: { // supershape — a spiky superformula star swept in 3D
+            const lon = th * 0.5;
+            const lat = (p - 0.5) * PI;
+            const r1 = superR(lon, 6, 0.3, 0.3, 0.3);
+            const r2 = superR(lat, 4, 0.7, 0.7, 0.7);
+            const R = baseR * 0.85 * (1 + a);
+            x = R * r1 * Math.cos(lon) * r2 * Math.cos(lat);
+            y = R * r2 * Math.sin(lat);
+            z = R * r1 * Math.sin(lon) * r2 * Math.cos(lat);
+            break;
+          }
+          case 12: { // DNA — two strands with rungs, drawn as one line
+            const turns = 3 + loops * 0.25;
+            const u = p * TWO_PI * turns;
+            const strand = Math.floor(p * 44) % 2; // hop between strands
+            const r = baseR * 0.42 * (1 + a);
+            x = r * Math.cos(u + strand * PI);
+            z = r * Math.sin(u + strand * PI);
+            y = (p - 0.5) * 2 * baseR;
+            break;
+          }
+          case 13: { // Klein figure-eight — a self-passing twisted bottle
+            const u = p * TWO_PI;
+            const v = p * TWO_PI * Math.max(8, loops * 2);
+            const w = Math.cos(u / 2) * Math.sin(v) - Math.sin(u / 2) * Math.sin(2 * v);
+            const R = baseR * 0.5;
+            const rr = R * (1 + 0.45 * (1 + a) * w);
+            x = rr * Math.cos(u);
+            y = rr * Math.sin(u);
+            z = R * 0.75 * (Math.sin(u / 2) * Math.sin(v) + Math.cos(u / 2) * Math.sin(2 * v));
             break;
           }
           default: { // 0: globe / sphere
@@ -516,7 +646,10 @@
       }
 
       const A = [0, 0, 0], B = [0, 0, 0];
-      const ease = morph * morph * (3 - 2 * morph); // smoothstep morph easing
+      // Smoothstep morph easing, capped by the Blend slider — at 1 a morph
+      // completes into the new form; below 1 the line holds a permanent
+      // in-between hybrid of the two shapes.
+      const ease = (morph * morph * (3 - 2 * morph)) * parseFloat(blendInput.value);
       const cy = Math.cos(rot), sy = Math.sin(rot); // shared yaw spin
       const persp = baseR * 3.2;                    // camera distance
       const pts = [];
@@ -525,11 +658,19 @@
         const s = smoothBuf[i] * 3.2; // smoothed signal (boosted to keep depth)
         formPoint(formA, p, s, A);
         let x3 = A[0], y3 = A[1], z3 = A[2];
-        if (ease < 1) {               // ease between the old and new form
+        if (ease > 0) {               // ease between the old and new form
           formPoint(formB, p, s, B);
           x3 += (B[0] - x3) * ease;
           y3 += (B[1] - y3) * ease;
           z3 += (B[2] - z3) * ease;
+        }
+        // Mid frequencies twist the form around its vertical axis.
+        if (twistK) {
+          const tw = twistK * (y3 / baseR);
+          const cw = Math.cos(tw), sw = Math.sin(tw);
+          const xt = x3 * cw + z3 * sw;
+          z3 = -x3 * sw + z3 * cw;
+          x3 = xt;
         }
         // Yaw, then tilt — keeping the depth coordinate for perspective
         // projection and near/far shading.
@@ -559,13 +700,16 @@
         bands[b].quadraticCurveTo(x1, y1, (x1 + pts[3 * (k + 1)]) / 2, (y1 + pts[3 * (k + 1) + 1]) / 2);
       }
 
-      ctx.save();
-      ctx.translate(W / 2, H / 2);
-      ctx.rotate(0.12 * Math.sin(t * 0.09)); // slow rolling sway
-      ctx.scale(breathe, breathe);
-      ctx.globalCompositeOperation = "lighter";
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
+      // Draw onto the line layer; the real glow is added in the composite
+      // pass (downscale + blur), so no per-stroke shadows are needed.
+      lctx.clearRect(0, 0, W, H);
+      lctx.save();
+      lctx.translate(W / 2, H / 2);
+      lctx.rotate(0.12 * Math.sin(t * 0.09)); // slow rolling sway
+      lctx.scale(breathe, breathe);
+      lctx.globalCompositeOperation = "lighter";
+      lctx.lineJoin = "round";
+      lctx.lineCap = "round";
 
       // Color slider: far left fades to pure white, then the full hue wheel.
       // Green (140) is the default.
@@ -574,28 +718,60 @@
       const glowL = 58 + (100 - sat) * 0.25; // white end glows a touch brighter
       const swell = 1 + bloom * 0.35;        // bloom brightens + thickens
 
-      // Far bands first, near bands last; each gets a glow pass and a hot
-      // near-white core, scaled by its depth factor.
+      // Far bands first, near bands last: a colored body and a hot near-white
+      // core, scaled by each band's depth factor (and treble thickness).
       for (let b = 0; b < NB; b++) {
         const df = (b + 0.5) / NB; // 0 = far .. 1 = near
-        const wf = 0.55 + 0.9 * df;
+        const wf = (0.55 + 0.9 * df) * thickK;
         const af = 0.35 + 0.75 * df;
 
-        ctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * swell * DPR;
-        ctx.shadowBlur = 16 * df * swell * DPR;
-        ctx.shadowColor = "hsla(" + hue + ", " + sat + "%, " + glowL + "%, 0.9)";
-        ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, " + (glowL + 4) + "%, " +
-          Math.min(1, 0.5 * flicker * af * swell).toFixed(3) + ")";
-        ctx.stroke(bands[b]);
+        lctx.lineWidth = (2.2 + energy * 2.2 * react) * wf * swell * DPR;
+        lctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, " + (glowL + 4) + "%, " +
+          Math.min(1, 0.55 * flicker * af * swell).toFixed(3) + ")";
+        lctx.stroke(bands[b]);
 
-        ctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * swell * DPR;
-        ctx.shadowBlur = 5 * df * DPR;
-        ctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, 90%, " +
+        lctx.lineWidth = (0.9 + energy * 0.8 * react) * wf * swell * DPR;
+        lctx.strokeStyle = "hsla(" + hue + ", " + sat + "%, 90%, " +
           Math.min(1, 0.95 * flicker * (0.5 + 0.5 * df) * swell).toFixed(3) + ")";
-        ctx.stroke(bands[b]);
+        lctx.stroke(bands[b]);
       }
 
-      ctx.restore();
+      // Mirror twin: the same figure flipped and slightly turned, drawn
+      // dimmer with a nudged hue, so the two interlock without clutter.
+      if (mirrorOn) {
+        lctx.scale(-1, 1);
+        lctx.rotate(0.5 + 0.3 * Math.sin(t * 0.05));
+        for (let b = 0; b < NB; b++) {
+          const df = (b + 0.5) / NB;
+          lctx.lineWidth = (1.5 + energy * 1.4 * react) * (0.55 + 0.9 * df) * thickK * swell * DPR;
+          lctx.strokeStyle = "hsla(" + (hue + 30) + ", " + sat + "%, " + (glowL + 8) + "%, " +
+            Math.min(1, 0.32 * flicker * (0.35 + 0.75 * df) * swell).toFixed(3) + ")";
+          lctx.stroke(bands[b]);
+        }
+      }
+
+      lctx.restore();
+    }
+
+    // Backdrop atmosphere: a faint bass-reactive color wash plus a slowly
+    // twinkling starfield. Kept dim so the line stays the star of the show.
+    function drawBackdrop(react) {
+      const hue = parseFloat(hueInput.value);
+      const sat = Math.min(100, (hue / 14) * 100);
+      const a = 0.03 + (energy * 0.12 + bloom * 0.08) * react * 2;
+      const g = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.75);
+      g.addColorStop(0, "hsla(" + hue + ", " + sat + "%, 40%, " + Math.min(0.16, a).toFixed(3) + ")");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.fillStyle = "#fff";
+      for (const s of stars) {
+        const tw = 0.5 + 0.5 * Math.sin(t * s.sp + s.ph);
+        ctx.globalAlpha = 0.04 + 0.2 * tw * tw;
+        ctx.fillRect(s.x, s.y, s.r, s.r);
+      }
+      ctx.globalAlpha = 1;
     }
 
     function frame(now) {
@@ -632,6 +808,18 @@
           for (let i = 0; i < n; i += 4) { const v = scopeL[i]; sum += v * v; cnt++; }
           const rms = Math.sqrt(sum / cnt);
           energy += (rms - energy) * 0.05;
+
+          // Slow band envelopes that re-form the structure of the shape.
+          analyserL.getByteFrequencyData(freqBuf);
+          const fb = freqBuf.length;
+          let bb = 0, mm = 0, tt = 0;
+          const bEnd = Math.floor(fb * 0.06), mEnd = Math.floor(fb * 0.3);
+          for (let i = 0; i < bEnd; i++) bb += freqBuf[i];
+          for (let i = bEnd; i < mEnd; i++) mm += freqBuf[i];
+          for (let i = mEnd; i < fb; i++) tt += freqBuf[i];
+          bassS += (bb / (bEnd * 255) - bassS) * 0.04;
+          midS += (mm / ((mEnd - bEnd) * 255) - midS) * 0.04;
+          trebS += (tt / ((fb - mEnd) * 255) - trebS) * 0.04;
 
           // Every few seconds pick a new pace at random: nearly still, fast, or
           // reversed. This drift is what carries it from stable to crazy.
@@ -670,19 +858,54 @@
           bloomTarget *= Math.exp(-dt * 1.4);
           bloom += (bloomTarget - bloom) * dt * 5;
 
+          // Auto mode: morph to a new shape on a strong hit or a quiet lull —
+          // never sooner than ~14s after the last change, always within ~45s.
+          if (autoMode) {
+            const due = t - lastShapeT;
+            if ((due > 14 && (bloomTarget > 0.9 || energy < 0.04)) || due > 45) {
+              formA = formB;
+              formB = (formB + 1 + Math.floor(Math.random() * (NSHAPES - 1))) % NSHAPES;
+              morph = 0;
+              lastShapeT = t;
+            }
+          }
+
           // Gentle breathing, swelling with the music and the bloom.
           breathe = 1 + 0.035 * Math.sin(t * 0.31) + (energy * 0.35 + bloom * 0.3) * react;
 
           const sens = parseFloat(sensitivityInput.value);
 
-          // No trails — clear the frame completely every time.
+          // Barely-there brightness shimmer — slow, never strobing.
+          const flicker = 0.97 + 0.03 * Math.sin(t * 2.6 + Math.sin(t * 0.9) * 2);
+          drawScope(sens, energy, flicker, motion, react, bloom);
+
+          // Composite: black, backdrop, real glow (downscale + blur the line
+          // layer twice), the crisp line itself, then a vignette.
           ctx.globalCompositeOperation = "source-over";
           ctx.fillStyle = "#000";
           ctx.fillRect(0, 0, W, H);
 
-          // Barely-there brightness shimmer — slow, never strobing.
-          const flicker = 0.97 + 0.03 * Math.sin(t * 2.6 + Math.sin(t * 0.9) * 2);
-          drawScope(sens, energy, flicker, motion, react, bloom);
+          if (backdropOn) drawBackdrop(react);
+
+          gctx.clearRect(0, 0, glowCanvas.width, glowCanvas.height);
+          gctx.drawImage(lineCanvas, 0, 0, glowCanvas.width, glowCanvas.height);
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.filter = "blur(" + (3 * DPR) + "px)";
+          ctx.globalAlpha = Math.min(1, 0.6 * (1 + bloom * 0.6));
+          ctx.drawImage(glowCanvas, 0, 0, W, H);
+          ctx.filter = "blur(" + (9 * DPR) + "px)";
+          ctx.globalAlpha = Math.min(1, 0.4 * (1 + bloom));
+          ctx.drawImage(glowCanvas, 0, 0, W, H);
+          ctx.filter = "none";
+          ctx.globalAlpha = 1;
+          ctx.drawImage(lineCanvas, 0, 0);
+          ctx.restore();
+
+          if (backdropOn) {
+            ctx.fillStyle = vigGrad;
+            ctx.fillRect(0, 0, W, H);
+          }
         } else {
           ctx.fillStyle = "rgba(0,0,0,0.3)";
           ctx.fillRect(0, 0, W, H);
@@ -708,14 +931,35 @@
       else if (e.key === "ArrowUp") { e.preventDefault(); nudge(reactInput, 0.05); }
       else if (e.key === "ArrowDown") { e.preventDefault(); nudge(reactInput, -0.05); }
       else {
-        // Number keys 1–0 pick a shape directly; the line morphs to it fluidly.
-        const idx = "1234567890".indexOf(e.key);
+        // Keys 1–0 and Q W E R pick a shape; the line morphs to it fluidly.
+        const k = e.key.toLowerCase();
+        let idx = "1234567890".indexOf(e.key);
+        if (idx === -1) {
+          const qi = "qwer".indexOf(k);
+          if (qi !== -1) idx = 10 + qi;
+        }
         if (idx !== -1 && idx !== formB) {
           formA = formB;
           formB = idx;
           morph = 0;
+          lastShapeT = t; // manual picks reset the auto-VJ clock
         }
       }
+    });
+
+    // Toggles: auto shape changes, the mirror twin, and the backdrop.
+    autoBtn.addEventListener("click", () => {
+      autoMode = !autoMode;
+      autoBtn.classList.toggle("on", autoMode);
+      lastShapeT = t;
+    });
+    mirrorBtn.addEventListener("click", () => {
+      mirrorOn = !mirrorOn;
+      mirrorBtn.classList.toggle("on", mirrorOn);
+    });
+    backBtn.addEventListener("click", () => {
+      backdropOn = !backdropOn;
+      backBtn.classList.toggle("on", backdropOn);
     });
   })();
   </script>
