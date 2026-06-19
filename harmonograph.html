@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Harmonograph — Dancing Oscillators</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #05060a; }
+  body {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: #cdd3e0;
+    display: grid;
+    place-items: center;
+  }
+  canvas { display: block; }
+  #stage { position: fixed; inset: 0; }
+
+  .hud {
+    position: fixed;
+    left: 18px;
+    bottom: 16px;
+    font-size: 12px;
+    line-height: 1.7;
+    letter-spacing: 0.5px;
+    opacity: 0.55;
+    pointer-events: none;
+    user-select: none;
+    text-shadow: 0 1px 6px #000;
+  }
+  .hud b { color: #8fb6ff; font-weight: 600; }
+  .title {
+    position: fixed;
+    left: 18px;
+    top: 16px;
+    font-size: 13px;
+    letter-spacing: 3px;
+    opacity: 0.6;
+    user-select: none;
+    text-shadow: 0 1px 6px #000;
+  }
+  .title small { display:block; letter-spacing: 1px; opacity: 0.6; margin-top: 4px; }
+  .flash {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 13px;
+    letter-spacing: 2px;
+    color: #cdd3e0;
+    opacity: 0;
+    pointer-events: none;
+    text-shadow: 0 1px 10px #000;
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div class="title">◎ HARMONOGRAPH<small>coupled damped oscillators</small></div>
+  <div class="hud">
+    <span><b>click / space</b> &nbsp;new pattern</span><br/>
+    <span><b>S</b> &nbsp;save image &nbsp;·&nbsp; <b>P</b> &nbsp;pause</span>
+  </div>
+  <div class="flash" id="flash"></div>
+
+<script>
+/*
+ * A harmonograph is a mechanical device that draws figures using the
+ * combined motion of several pendulums. Each axis of the pen is driven
+ * by a sum of decaying sinusoids (damped oscillators):
+ *
+ *     x(t) = Σ Aᵢ · sin(fᵢ·t + φᵢ) · e^(−dᵢ·t)
+ *     y(t) = Σ Aⱼ · sin(fⱼ·t + φⱼ) · e^(−dⱼ·t)
+ *
+ * Slightly detuned frequencies make the curve precess, weaving an
+ * ever-shifting lattice that slowly settles to stillness as the
+ * pendulums lose energy. We draw it incrementally and let the hue
+ * sweep along the path, then reseed when the motion dies out.
+ */
+
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d", { alpha: false });
+const flashEl = document.getElementById("flash");
+
+let W, H, DPR;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * DPR;
+  canvas.height = H * DPR;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  paintBackground();
+}
+window.addEventListener("resize", resize);
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+
+let pattern, paused = false;
+
+function makePattern() {
+  // A base frequency with a few near-integer ratios gives those classic
+  // rose / lattice shapes; the tiny detunes are what make them breathe.
+  const base = rand(1.6, 3.4);
+  const ratios = [1, 2, 3, pick([2, 3, 4, 5])];
+  const osc = (axis) =>
+    ratios.map((r) => ({
+      f: base * r + rand(-0.04, 0.04),
+      phase: rand(0, Math.PI * 2),
+      amp: rand(0.12, 1) / r,
+      decay: rand(0.0018, 0.006),
+    }));
+
+  return {
+    x: osc("x"),
+    y: osc("y"),
+    t: 0,
+    dt: 0.018,
+    hue: rand(0, 360),
+    hueRate: rand(8, 26) * (Math.random() < 0.5 ? -1 : 1),
+    prev: null,
+    energy: 1,
+    scale: Math.min(W, H) * rand(0.30, 0.42),
+  };
+}
+
+function evalAxis(oscs, t) {
+  let v = 0;
+  for (const o of oscs) {
+    v += o.amp * Math.sin(o.f * t + o.phase) * Math.exp(-o.decay * t * 60);
+  }
+  return v;
+}
+
+function paintBackground() {
+  ctx.fillStyle = "#05060a";
+  ctx.fillRect(0, 0, W, H);
+}
+
+function reseed(announce) {
+  pattern = makePattern();
+  // fade, don't wipe — lets a ghost of the old figure linger a beat
+  ctx.fillStyle = "rgba(5,6,10,0.55)";
+  ctx.fillRect(0, 0, W, H);
+  if (announce) flash("✦ new pattern");
+}
+
+let flashT = 0;
+function flash(msg) {
+  flashEl.textContent = msg;
+  flashT = 1;
+}
+
+function step() {
+  if (!paused && pattern) {
+    const p = pattern;
+    const cx = W / 2, cy = H / 2;
+    // several sub-steps per frame for a smooth continuous line
+    const STEPS = 9;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < STEPS; i++) {
+      p.t += p.dt;
+      const env = Math.exp(-0.0009 * p.t * 60);
+      p.energy = env;
+      const x = cx + evalAxis(p.x, p.t) * p.scale * env;
+      const y = cy + evalAxis(p.y, p.t) * p.scale * env;
+      p.hue = (p.hue + p.hueRate * p.dt + 360) % 360;
+
+      if (p.prev) {
+        ctx.strokeStyle = `hsla(${p.hue}, 85%, ${55 + 15 * env}%, ${0.55 * env + 0.08})`;
+        ctx.beginPath();
+        ctx.moveTo(p.prev.x, p.prev.y);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      }
+      p.prev = { x, y };
+    }
+    // gentle persistent glow fade so old strokes slowly dim
+    ctx.fillStyle = "rgba(5,6,10,0.012)";
+    ctx.fillRect(0, 0, W, H);
+
+    if (p.energy < 0.04) reseed(false);
+  }
+
+  if (flashT > 0) {
+    flashT = Math.max(0, flashT - 0.012);
+    flashEl.style.opacity = Math.min(1, flashT * 2.2);
+  }
+  requestAnimationFrame(step);
+}
+
+// ---- interaction ----
+function newPattern() { reseed(true); }
+
+canvas.addEventListener("pointerdown", newPattern);
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); newPattern(); }
+  else if (e.key === "p" || e.key === "P") {
+    paused = !paused; flash(paused ? "⏸ paused" : "▶ resumed");
+  }
+  else if (e.key === "s" || e.key === "S") {
+    const a = document.createElement("a");
+    a.download = "harmonograph.png";
+    a.href = canvas.toDataURL("image/png");
+    a.click();
+    flash("⬇ saved image");
+  }
+});
+
+resize();
+pattern = makePattern();
+step();
+</script>
+</body>
+</html>
