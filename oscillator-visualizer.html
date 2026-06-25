@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Oscilloscope</title>
   <style>
     * { box-sizing: border-box; }
@@ -14,8 +14,11 @@
       color: #4dff88;
       font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
       user-select: none;
+      overscroll-behavior: none;        /* no pull-to-refresh / bounce */
+      -webkit-tap-highlight-color: transparent;
     }
-    #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    /* The canvas owns touch gestures; the control panel keeps native touch. */
+    #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
     .hidden { display: none !important; }
 
     .drop-hint {
@@ -115,6 +118,23 @@
     .text-btn:hover { background: rgba(77, 255, 136, 0.15); }
     .text-btn.rec { color: #ff5a5a; border-color: rgba(255, 90, 90, 0.5); }
     .text-btn.on { background: rgba(77, 255, 136, 0.22); }
+
+    /* Phones / coarse pointers: roomier targets and a scrollable panel so the
+       many controls never run off-screen. The PC layout is unchanged. */
+    @media (pointer: coarse), (max-width: 640px) {
+      .ui {
+        width: calc(100% - 16px);
+        max-height: 46vh;
+        overflow-y: auto;
+        bottom: max(12px, env(safe-area-inset-bottom));
+      }
+      .ctl { font-size: 0.78rem; flex: 1 1 130px; }
+      .ctl input[type="range"] { height: 14px; }
+      .text-btn { padding: 10px 14px; font-size: 0.82rem; }
+      .icon-btn { width: 48px; height: 48px; }
+      input[type="range"]::-webkit-slider-thumb { width: 20px; height: 20px; }
+      input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; }
+    }
   </style>
 </head>
 <body>
@@ -126,6 +146,7 @@
       <p>Drop an MP3 anywhere, or click to choose a file</p>
       <p class="sub">Audio stays in your browser.</p>
       <p class="sub">Keys 1–0 + Q W E R switch shapes · ← → shape detail · ↑ ↓ audio · space play/pause</p>
+      <p class="sub">On phone: swipe ◀ ▶ to change shape · swipe ▲ ▼ for audio · tap to show controls</p>
     </div>
   </div>
 
@@ -425,6 +446,11 @@
     let recorder = null, recChunks = [];
     recBtn.addEventListener("click", () => {
       if (recorder) { recorder.stop(); return; }
+      if (typeof MediaRecorder === "undefined" || !canvas.captureStream) {
+        nowPlaying.textContent = "⚠ Recording isn't supported in this browser.";
+        ui.classList.remove("hidden");
+        return;
+      }
       initAudio();
       const stream = canvas.captureStream(60);
       recDest.stream.getAudioTracks().forEach((tr) => stream.addTrack(tr));
@@ -951,8 +977,8 @@
           // climb back up when fast). Keeps motion fluid on any machine.
           perfAvg += (Math.min(rawMs, 100) - perfAvg) * 0.04;
           if (t > perfCooldown) {
-            if (perfAvg > 26 && resScale > 0.55) {
-              resScale = Math.max(0.55, resScale - 0.15);
+            if (perfAvg > 26 && resScale > 0.4) {
+              resScale = Math.max(0.4, resScale - 0.15);
               resize();
               perfAvg = 16; perfCooldown = t + 2.5;
             } else if (perfAvg < 13 && resScale < 1) {
@@ -1211,6 +1237,38 @@
       backdropOn = !backdropOn;
       backBtn.classList.toggle("on", backdropOn);
     });
+
+    // ---- Touch / swipe controls (phones) ----
+    // Layered on top of the canvas only — the control panel keeps its native
+    // touch handling, and none of this affects mouse/keyboard on desktop.
+    // Swipe ◀▶ = previous/next shape · swipe ▲▼ = Audio · tap = reveal panel.
+    let tx0 = 0, ty0 = 0, touchActive = false;
+    function cycleShape(dir) {
+      formA = formB;
+      formB = (formB + dir + NSHAPES) % NSHAPES;
+      morph = 0;
+      lastShapeT = t;
+    }
+    canvas.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) { touchActive = false; return; }
+      tx0 = e.touches[0].clientX;
+      ty0 = e.touches[0].clientY;
+      touchActive = true;
+      poke();
+    }, { passive: true });
+    canvas.addEventListener("touchmove", (e) => {
+      if (touchActive && e.cancelable) e.preventDefault(); // block page scroll/zoom
+    }, { passive: false });
+    canvas.addEventListener("touchend", (e) => {
+      if (!touchActive) return;
+      touchActive = false;
+      const tt = e.changedTouches[0];
+      const dx = tt.clientX - tx0, dy = tt.clientY - ty0;
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      if (Math.max(adx, ady) < 26) return; // a tap — touchstart already showed the panel
+      if (adx > ady) cycleShape(dx > 0 ? 1 : -1);                 // horizontal: change shape
+      else nudge(reactInput, -dy / (window.innerHeight * 0.6));   // vertical: Audio up/down
+    }, { passive: true });
   })();
   </script>
 </body>
