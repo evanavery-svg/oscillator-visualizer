@@ -119,19 +119,49 @@
     .text-btn.rec { color: #ff5a5a; border-color: rgba(255, 90, 90, 0.5); }
     .text-btn.on { background: rgba(77, 255, 136, 0.22); }
 
-    /* Phones / coarse pointers: a compact, low-profile panel that hugs the
-       bottom and stays out of the way of the visual. The PC layout is
-       unchanged. Touch targets stay tappable but the chrome is much smaller. */
+    /* Bottom toggle button — hidden on desktop, shown on phones. */
+    #menuToggle {
+      display: none;
+      position: fixed;
+      left: 50%;
+      bottom: max(8px, env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      z-index: 30;
+      padding: 8px 20px;
+      border-radius: 999px;
+      border: 1px solid rgba(77, 255, 136, 0.4);
+      background: rgba(0, 12, 4, 0.78);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: #4dff88;
+      font: 600 0.72rem "Segoe UI", system-ui, sans-serif;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+    }
+
+    /* Phones / coarse pointers: the control panel is tucked away off-screen and
+       only slides up when the bottom toggle button is tapped, so the visual
+       owns the whole screen by default. The PC layout is unchanged. */
     @media (pointer: coarse), (max-width: 640px) {
+      #menuToggle { display: block; }
+      /* Hide the toggle until a track is loaded (panel still .hidden). */
+      body:has(#ui.hidden) #menuToggle { display: none; }
+
       .ui {
         width: calc(100% - 14px);
-        max-height: 40vh;
+        max-height: 62vh;
         overflow-y: auto;
         padding: 8px 10px;
         border-radius: 11px;
-        bottom: max(8px, env(safe-area-inset-bottom));
-        background: rgba(0, 12, 4, 0.72);
+        bottom: calc(max(8px, env(safe-area-inset-bottom)) + 46px);
+        background: rgba(0, 12, 4, 0.82);
+        transition: transform 0.3s ease, opacity 0.3s ease;
       }
+      /* Collapsed by default; slide up and reveal when body.panel-open. */
+      .ui { transform: translate(-50%, 130%); opacity: 0; pointer-events: none; }
+      body.panel-open .ui { transform: translateX(-50%); opacity: 1; pointer-events: auto; }
+      body.panel-open .ui.idle { opacity: 1; pointer-events: auto; }
+
       .now-playing { font-size: 0.72rem; margin-bottom: 6px; }
       .transport { gap: 8px; margin-bottom: 8px; }
       .icon-btn { width: 34px; height: 34px; font-size: 0.85rem; }
@@ -197,6 +227,9 @@
       <button id="recBtn" class="text-btn">● Record</button>
     </div>
   </div>
+
+  <!-- Mobile-only: collapses the control panel behind a small bottom button. -->
+  <button id="menuToggle" aria-label="Toggle controls">▲ Controls</button>
 
   <input id="fileInput" type="file" accept="audio/*,.mp3" hidden />
 
@@ -495,6 +528,14 @@
     window.addEventListener("mousemove", poke);
     window.addEventListener("touchstart", poke, { passive: true });
 
+    // Mobile: bottom button opens/closes the control panel.
+    const menuToggle = document.getElementById("menuToggle");
+    menuToggle.addEventListener("click", () => {
+      const open = document.body.classList.toggle("panel-open");
+      menuToggle.textContent = open ? "▼ Hide" : "▲ Controls";
+      poke();
+    });
+
     // Slow per-band envelopes that reshape the structure of the form:
     // bass -> coil count, mids -> twist, treble -> line thickness.
     // (Declared before resize() runs below — accessing a let before its
@@ -516,9 +557,10 @@
     // ---- Canvas ----
     let W = 0, H = 0, DPR = 1;
     function resize() {
-      // Cap density at 1.5 and apply the adaptive scale — stroke + blur cost
-      // grows with the square of resolution, so this is the main lever.
-      DPR = Math.min(window.devicePixelRatio || 1, 1.5) * resScale;
+      // Cap density at 2 and apply the adaptive scale — stroke + blur cost
+      // grows with the square of resolution, so this is the main lever. Retina
+      // phones (iPhone) need the higher cap or the line looks upscaled/blurry.
+      DPR = Math.min(window.devicePixelRatio || 1, 2) * resScale;
       W = Math.floor(window.innerWidth * DPR);
       H = Math.floor(window.innerHeight * DPR);
       canvas.width = W;
