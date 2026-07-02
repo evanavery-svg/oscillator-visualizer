@@ -568,6 +568,7 @@
       canvas.height = H;
       canvas.style.width = window.innerWidth + "px";
       canvas.style.height = window.innerHeight + "px";
+      ctx.imageSmoothingQuality = "high"; // cleaner glow upscale
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, W, H);
 
@@ -581,18 +582,24 @@
       lctx = lineCanvas.getContext("2d");
       gctx = glowCanvas.getContext("2d");
       g2ctx = glow2Canvas.getContext("2d");
+      gctx.imageSmoothingQuality = "high";  // better 1/4-res downscale
+      g2ctx.imageSmoothingQuality = "high";
 
-      // Vignette gradient (cached) and a fresh starfield for this size.
+      // Vignette gradient (cached). The starfield lives in normalized coords
+      // (scaled at draw time), so adaptive-resolution changes don't visibly
+      // reshuffle the sky.
       vigGrad = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.42, W / 2, H / 2, Math.hypot(W, H) * 0.58);
       vigGrad.addColorStop(0, "rgba(0,0,0,0)");
       vigGrad.addColorStop(1, "rgba(0,0,0,0.55)");
-      stars = [];
-      for (let i = 0; i < 80; i++) {
-        stars.push({
-          x: Math.random() * W, y: Math.random() * H,
-          r: (0.5 + Math.random() * 1.3) * DPR,
-          ph: Math.random() * 6.28, sp: 0.15 + Math.random() * 0.6,
-        });
+      if (!stars || !stars.length) {
+        stars = [];
+        for (let i = 0; i < 80; i++) {
+          stars.push({
+            x: Math.random(), y: Math.random(),
+            r: 0.5 + Math.random() * 1.3,
+            ph: Math.random() * 6.28, sp: 0.15 + Math.random() * 0.6,
+          });
+        }
       }
     }
     window.addEventListener("resize", resize);
@@ -602,6 +609,7 @@
     // Slowly-evolving motion state, layered on top of the live trace so the
     // figure never repeats exactly. None of this changes the green look.
     let t = 0, last = performance.now();
+    let lastUiT = 0;        // throttles seek-bar / clock DOM updates
     let rot = 0;            // precessing rotation of the figure
     let energy = 0;         // smoothed loudness (RMS) of the signal
     let slow = 1;           // current pace multiplier
@@ -847,7 +855,10 @@
         const cy = Math.cos(yawAngle), sy = Math.sin(yawAngle);
         const A = [0, 0, 0], B = [0, 0, 0];
         const pts = [];
-        for (let i = 0; i < n; i += 8) {
+        // Sample the waveform twice as densely when frames are comfortably
+        // fast — tightly-wound shapes get visibly rounder coils.
+        const step = perfAvg < 19 ? 4 : 8;
+        for (let i = 0; i < n; i += step) {
           const p = i / n;
           const s = buf[i] * 3.2 * (1 - hb); // hush also stills the surface
           formPoint(formA, p, s, A);
@@ -1005,7 +1016,8 @@
       for (const s of stars) {
         const tw = 0.5 + 0.5 * Math.sin(t * s.sp + s.ph);
         ctx.globalAlpha = 0.04 + 0.2 * tw * tw;
-        ctx.fillRect(s.x, s.y, s.r, s.r);
+        const sr = s.r * DPR;
+        ctx.fillRect(s.x * W, s.y * H, sr, sr);
       }
       ctx.globalAlpha = 1;
     }
@@ -1018,10 +1030,22 @@
         if (analyserL) {
           analyserL.getFloatTimeDomainData(scopeL);
           analyserR.getFloatTimeDomainData(scopeR);
-          updateTransport();
 
           const n = scopeL.length;
           t += dt;
+
+          // The seek bar / clock only need a few updates per second; touching
+          // the DOM every frame costs style recalcs that jank phones.
+          if (t - lastUiT > 0.25) { lastUiT = t; updateTransport(); }
+
+          // Frame-rate independent smoothing factors: the same feel at 60 Hz,
+          // 120 Hz (iPhone ProMotion), or anywhere in between. Each is the
+          // exponential equivalent of the old per-frame blend at 60 fps.
+          const kEnv = 1 - Math.exp(-3.1 * dt);   // was 0.05/frame
+          const kBlend = 1 - Math.exp(-7.7 * dt); // was 0.12/frame
+          const kBand = 1 - Math.exp(-2.5 * dt);  // was 0.04/frame
+          const kFast = 1 - Math.exp(-42 * dt);   // was 0.5/frame
+          const kVslow = 1 - Math.exp(-0.36 * dt); // was 0.006/frame
 
           // Adaptive quality: ease toward the average frame time; if we're
           // consistently slow, render at a lower internal resolution (and
@@ -1052,7 +1076,7 @@
           acc = 0;
           for (let i = n - 1; i >= 0; i--) {
             acc += (scratchBuf[i] - acc) * 0.06;
-            smoothBuf[i] += (acc - smoothBuf[i]) * 0.12;
+            smoothBuf[i] += (acc - smoothBuf[i]) * kBlend;
           }
 
           // Track loudness (RMS). Quiet passages settle into one calm line;
@@ -1060,13 +1084,13 @@
           let sum = 0, cnt = 0;
           for (let i = 0; i < n; i += 4) { const v = scopeL[i]; sum += v * v; cnt++; }
           const rms = Math.sqrt(sum / cnt);
-          energy += (rms - energy) * 0.05;
+          energy += (rms - energy) * kEnv;
 
           // Quiet dot: ease toward "hushed" when the signal is (near) silent,
           // and back to full presence when music returns.
           const presence = Math.min(1, Math.max(0, (energy - 0.006) / 0.03));
           const hushTarget = hushOn ? 1 - presence : 0;
-          hush += (hushTarget - hush) * Math.min(1, dt * 2.2);
+          hush += (hushTarget - hush) * (1 - Math.exp(-2.2 * dt));
 
           // Slow band envelopes that re-form the structure of the shape.
           analyserL.getByteFrequencyData(freqBuf);
@@ -1076,9 +1100,9 @@
           for (let i = 0; i < bEnd; i++) bb += freqBuf[i];
           for (let i = bEnd; i < mEnd; i++) mm += freqBuf[i];
           for (let i = mEnd; i < fb; i++) tt += freqBuf[i];
-          bassS += (bb / (bEnd * 255) - bassS) * 0.04;
-          midS += (mm / ((mEnd - bEnd) * 255) - midS) * 0.04;
-          trebS += (tt / ((fb - mEnd) * 255) - trebS) * 0.04;
+          bassS += (bb / (bEnd * 255) - bassS) * kBand;
+          midS += (mm / ((mEnd - bEnd) * 255) - midS) * kBand;
+          trebS += (tt / ((fb - mEnd) * 255) - trebS) * kBand;
 
           // Every few seconds pick a new pace at random: nearly still, fast, or
           // reversed. This drift is what carries it from stable to crazy.
@@ -1110,7 +1134,7 @@
 
           // Bloom: a fast envelope spots strong hits; the swell rises over
           // ~half a second then relaxes — drama without shake. Gated by Audio.
-          fastE += (rms - fastE) * 0.5;
+          fastE += (rms - fastE) * kFast;
           if (fastE > energy * 1.5 && fastE > 0.06 && t > bloomGate) {
             bloomTarget = 1;
             bloomGate = t + 0.5;
@@ -1142,18 +1166,18 @@
             }
           }
           bloomTarget *= Math.exp(-dt * 1.4);
-          bloom += (bloomTarget - bloom) * dt * 5;
+          bloom += (bloomTarget - bloom) * (1 - Math.exp(-5 * dt));
 
           // Beat phase ticks along the period; the pulse spikes at each
           // predicted beat and the motion rides it only with confidence.
           beatPhase += dt / beatPeriod;
           beatConf = Math.max(0, beatConf - dt * 0.05);
-          beatPulse += (Math.exp(-5 * (beatPhase % 1)) - beatPulse) * Math.min(1, dt * 14);
+          beatPulse += (Math.exp(-5 * (beatPhase % 1)) - beatPulse) * (1 - Math.exp(-14 * dt));
           beatGain = beatPulse * beatConf * react * 2;
 
           // Tension rises while the track builds above its long-term level,
           // and leaks away slowly if the build fizzles.
-          energyVslow += (rms - energyVslow) * 0.006;
+          energyVslow += (rms - energyVslow) * kVslow;
           tension = Math.min(1, Math.max(0,
             tension + (Math.max(0, energy - energyVslow * 1.18) * 2.0 - 0.05) * dt));
           releaseEnv *= Math.exp(-dt * 1.5);
@@ -1170,7 +1194,7 @@
             accV = 0;
             for (let i = n - 1; i >= 0; i--) {
               accV += (scratchBuf[i] - accV) * 0.06;
-              smoothBufV[i] += (accV - smoothBufV[i]) * 0.12;
+              smoothBufV[i] += (accV - smoothBufV[i]) * kBlend;
             }
           }
 
