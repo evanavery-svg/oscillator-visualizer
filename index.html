@@ -549,6 +549,12 @@
     // per-stroke shadowBlur). Plus backdrop furniture.
     let lineCanvas = null, lctx = null, glowCanvas = null, gctx = null;
     let glow2Canvas = null, g2ctx = null;
+    // Older Safari (< 18, i.e. many iPhones) has no canvas filter support —
+    // blur() is silently ignored and the "glow" degrades into a jagged
+    // upscaled copy of the line. Fall back to pyramid down/up-sampling:
+    // each bilinear hop softens the image, approximating the two blurs.
+    const HAS_FILTER = "filter" in CanvasRenderingContext2D.prototype;
+    let glowBCanvas = null, bctx = null, glowCCanvas = null, cctx = null;
     let vigGrad = null, stars = [];
 
     // Adaptive quality: if frames run long, drop the internal render
@@ -558,10 +564,10 @@
     // ---- Canvas ----
     let W = 0, H = 0, DPR = 1;
     function resize() {
-      // Cap density at 2 and apply the adaptive scale — stroke + blur cost
-      // grows with the square of resolution, so this is the main lever. Retina
-      // phones (iPhone) need the higher cap or the line looks upscaled/blurry.
-      DPR = Math.min(window.devicePixelRatio || 1, 2) * resScale;
+      // Render at the screen's native density (iPhones are 3x — anything less
+      // shows as a permanently soft upscale), scaled by the adaptive factor.
+      // If a device can't keep up, the perf governor lowers resScale instead.
+      DPR = Math.min(window.devicePixelRatio || 1, 3) * resScale;
       W = Math.floor(window.innerWidth * DPR);
       H = Math.floor(window.innerHeight * DPR);
       canvas.width = W;
@@ -584,6 +590,14 @@
       g2ctx = glow2Canvas.getContext("2d");
       gctx.imageSmoothingQuality = "high";  // better 1/4-res downscale
       g2ctx.imageSmoothingQuality = "high";
+      if (!HAS_FILTER) { // extra pyramid levels for the no-filter glow path
+        glowBCanvas = glowBCanvas || document.createElement("canvas");
+        glowCCanvas = glowCCanvas || document.createElement("canvas");
+        glowBCanvas.width = Math.max(2, W >> 3); glowBCanvas.height = Math.max(2, H >> 3);
+        glowCCanvas.width = Math.max(2, W >> 4); glowCCanvas.height = Math.max(2, H >> 4);
+        bctx = glowBCanvas.getContext("2d");
+        cctx = glowCCanvas.getContext("2d");
+      }
 
       // Vignette gradient (cached). The starfield lives in normalized coords
       // (scaled at draw time), so adaptive-resolution changes don't visibly
@@ -1049,14 +1063,17 @@
 
           // Adaptive quality: ease toward the average frame time; if we're
           // consistently slow, render at a lower internal resolution (and
-          // climb back up when fast). Keeps motion fluid on any machine.
+          // climb back up when fast). The raise threshold sits ABOVE a 60 Hz
+          // vsync frame (16.7 ms): a healthy phone locked to 60 fps must be
+          // able to climb back to full resolution, and a 30 fps cap (iOS Low
+          // Power Mode) must not read as "struggling" and nuke the quality.
           perfAvg += (Math.min(rawMs, 100) - perfAvg) * 0.04;
           if (t > perfCooldown) {
-            if (perfAvg > 26 && resScale > 0.55) {
+            if (perfAvg > 34 && resScale > 0.55) {
               resScale = Math.max(0.55, resScale - 0.15);
               resize();
               perfAvg = 16; perfCooldown = t + 2.5;
-            } else if (perfAvg < 13 && resScale < 1) {
+            } else if (perfAvg < 19 && resScale < 1) {
               resScale = Math.min(1, resScale + 0.15);
               resize();
               perfAvg = 16; perfCooldown = t + 5;
@@ -1229,16 +1246,35 @@
 
           // All blurring happens at quarter resolution (~16x cheaper than
           // blurring at full size); the bilinear upscale adds free softness.
+          // glow2Canvas ends up holding the tight glow, glowCanvas the wide.
           const gw = glowCanvas.width, gh = glowCanvas.height;
-          gctx.filter = "none";
-          gctx.clearRect(0, 0, gw, gh);
-          gctx.drawImage(lineCanvas, 0, 0, gw, gh);
-          g2ctx.clearRect(0, 0, gw, gh);
-          g2ctx.filter = "blur(2px)";
-          g2ctx.drawImage(glowCanvas, 0, 0);          // tight glow
-          gctx.filter = "blur(4px)";
-          gctx.clearRect(0, 0, gw, gh);
-          gctx.drawImage(glow2Canvas, 0, 0);          // wide glow
+          if (HAS_FILTER) {
+            gctx.filter = "none";
+            gctx.clearRect(0, 0, gw, gh);
+            gctx.drawImage(lineCanvas, 0, 0, gw, gh);
+            g2ctx.clearRect(0, 0, gw, gh);
+            g2ctx.filter = "blur(2px)";
+            g2ctx.drawImage(glowCanvas, 0, 0);          // tight glow
+            gctx.filter = "blur(4px)";
+            gctx.clearRect(0, 0, gw, gh);
+            gctx.drawImage(glow2Canvas, 0, 0);          // wide glow
+          } else {
+            // No canvas filter (older iOS Safari): soften by resampling down
+            // the pyramid and back up — 1/8 res reads as the tight blur,
+            // 1/16 as the wide one.
+            const bw = glowBCanvas.width, bh = glowBCanvas.height;
+            const cw = glowCCanvas.width, ch = glowCCanvas.height;
+            gctx.clearRect(0, 0, gw, gh);
+            gctx.drawImage(lineCanvas, 0, 0, gw, gh);   // sharp 1/4
+            bctx.clearRect(0, 0, bw, bh);
+            bctx.drawImage(glowCanvas, 0, 0, bw, bh);   // 1/8
+            cctx.clearRect(0, 0, cw, ch);
+            cctx.drawImage(glowBCanvas, 0, 0, cw, ch);  // 1/16
+            g2ctx.clearRect(0, 0, gw, gh);
+            g2ctx.drawImage(glowBCanvas, 0, 0, gw, gh); // tight glow
+            gctx.clearRect(0, 0, gw, gh);
+            gctx.drawImage(glowCCanvas, 0, 0, gw, gh);  // wide glow
+          }
           ctx.save();
           ctx.globalCompositeOperation = "lighter";
           ctx.globalAlpha = Math.min(1, 0.7 * (1 + bloom * 0.6));
