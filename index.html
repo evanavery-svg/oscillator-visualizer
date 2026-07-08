@@ -183,9 +183,9 @@
       <div class="logo">OSCILLOSCOPE</div>
       <p>Drop an MP3 anywhere, or click to choose a file</p>
       <p class="sub">Audio stays in your browser.</p>
-      <p class="sub">Keys 1–0 + Q W E R switch shapes · ← → shape detail · ↑ ↓ audio · space play/pause</p>
+      <p class="sub">Keys 1–0 + Q W E R T Y U I switch shapes · ← → shape detail · ↑ ↓ audio · space play/pause</p>
       <p class="sub">On phone: swipe ◀ ▶ to change shape · swipe ▲ ▼ for audio · tap to show controls</p>
-      <p class="sub credit">v1.1 · © Avery LLC</p>
+      <p class="sub credit">v1.2 · © Avery LLC</p>
     </div>
   </div>
 
@@ -559,15 +559,15 @@
 
     // Adaptive quality: if frames run long, drop the internal render
     // resolution a notch (and climb back when there's headroom).
-    let resScale = 1, perfAvg = 16, perfCooldown = 0;
+    let perfAvg = 16;
 
     // ---- Canvas ----
     let W = 0, H = 0, DPR = 1;
     function resize() {
-      // Render at the screen's native density (iPhones are 3x — anything less
-      // shows as a permanently soft upscale), scaled by the adaptive factor.
-      // If a device can't keep up, the perf governor lowers resScale instead.
-      DPR = Math.min(window.devicePixelRatio || 1, 3) * resScale;
+      // Always render at the screen's true native density — resolution is
+      // never lowered. If a device runs slow, the governor thins the path
+      // sampling instead (see buildBands), which never blurs the image.
+      DPR = window.devicePixelRatio || 1;
       W = Math.floor(window.innerWidth * DPR);
       H = Math.floor(window.innerHeight * DPR);
       canvas.width = W;
@@ -633,7 +633,7 @@
 
     // Shape morphing: forms are picked with keys 1–0 and Q W E R; the line
     // eases fluidly from the old form to the new one.
-    const NSHAPES = 14;
+    const NSHAPES = 18;
     let formA = 0, formB = 0, morph = 1;
     let autoMode = false, lastShapeT = 0; // auto-VJ: morph on hits/lulls
     let mirrorOn = false, backdropOn = true, duetOn = false;
@@ -838,6 +838,52 @@
             z = R * 0.75 * (Math.sin(u / 2) * Math.sin(v) + Math.cos(u / 2) * Math.sin(2 * v));
             break;
           }
+          case 14: { // spiral galaxy — out along one arm, back in along the other
+            const outward = p < 0.5;
+            const q = outward ? p * 2 : (1 - p) * 2;
+            const u = q * TWO_PI * 2.4 + (outward ? 0 : PI);
+            const r = baseR * (0.06 + 0.94 * Math.pow(q, 1.35)) * (1 + a);
+            x = r * Math.cos(u);
+            z = r * Math.sin(u);
+            y = baseR * 0.12 * Math.sin(q * TWO_PI * 5) * (1 - q); // thin disc, lively core
+            break;
+          }
+          case 15: { // heart — the classic curve, rippling in depth
+            const u = p * TWO_PI * 2; // two passes for a fuller line
+            const R = baseR * 0.055 * (1 + a);
+            const sy = Math.sin(u);
+            x = R * 16 * sy * sy * sy;
+            y = -R * (13 * Math.cos(u) - 5 * Math.cos(2 * u) - 2 * Math.cos(3 * u) - Math.cos(4 * u));
+            z = baseR * 0.24 * Math.sin(3 * u);
+            break;
+          }
+          case 16: { // spirograph — five looping petals with alternating depth
+            const u = p * TWO_PI;
+            const R = baseR * 0.55 * (1 + a);
+            x = R * (Math.cos(u) + 0.55 * Math.cos(-5 * u));
+            y = R * (Math.sin(u) + 0.55 * Math.sin(-5 * u));
+            z = baseR * 0.3 * Math.cos(6 * u);
+            break;
+          }
+          case 17: { // ringed planet — a wound globe handing off to spiral rings
+            if (p < 0.72) {
+              const q = p / 0.72;
+              const thp = q * TWO_PI * Math.max(6, loops);
+              const phi = q * PI, sp = Math.sin(phi);
+              const r = baseR * 0.58 * (1 + a);
+              x = r * sp * Math.cos(thp);
+              y = r * Math.cos(phi) * 0.92;
+              z = r * sp * Math.sin(thp);
+            } else {
+              const q = (p - 0.72) / 0.28;
+              const u = q * TWO_PI * 3;
+              const rr = baseR * (0.8 + 0.22 * q) * (1 + a * 0.3);
+              x = rr * Math.cos(u);
+              z = rr * Math.sin(u);
+              y = baseR * 0.02 * Math.sin(u * 7);
+            }
+            break;
+          }
           default: { // 0: globe / sphere
             const r = baseR * (1 + a);
             const phi = p * PI, sp = Math.sin(phi);
@@ -869,9 +915,9 @@
         const cy = Math.cos(yawAngle), sy = Math.sin(yawAngle);
         const A = [0, 0, 0], B = [0, 0, 0];
         const pts = [];
-        // Sample the waveform twice as densely when frames are comfortably
-        // fast — tightly-wound shapes get visibly rounder coils.
-        const step = perfAvg < 19 ? 4 : 8;
+        // Path density scales with headroom: dense when fast, and only ever
+        // thinned (never blurred) when a device genuinely can't keep up.
+        const step = perfAvg < 19 ? 4 : perfAvg < 34 ? 8 : 12;
         for (let i = 0; i < n; i += step) {
           const p = i / n;
           const s = buf[i] * 3.2 * (1 - hb); // hush also stills the surface
@@ -1061,24 +1107,9 @@
           const kFast = 1 - Math.exp(-42 * dt);   // was 0.5/frame
           const kVslow = 1 - Math.exp(-0.36 * dt); // was 0.006/frame
 
-          // Adaptive quality: ease toward the average frame time; if we're
-          // consistently slow, render at a lower internal resolution (and
-          // climb back up when fast). The raise threshold sits ABOVE a 60 Hz
-          // vsync frame (16.7 ms): a healthy phone locked to 60 fps must be
-          // able to climb back to full resolution, and a 30 fps cap (iOS Low
-          // Power Mode) must not read as "struggling" and nuke the quality.
+          // Rolling frame-time average. Resolution stays at native density no
+          // matter what; this only steers path sampling density in buildBands.
           perfAvg += (Math.min(rawMs, 100) - perfAvg) * 0.04;
-          if (t > perfCooldown) {
-            if (perfAvg > 34 && resScale > 0.55) {
-              resScale = Math.max(0.55, resScale - 0.15);
-              resize();
-              perfAvg = 16; perfCooldown = t + 2.5;
-            } else if (perfAvg < 19 && resScale < 1) {
-              resScale = Math.min(1, resScale + 0.15);
-              resize();
-              perfAvg = 16; perfCooldown = t + 5;
-            }
-          }
 
           // Fluidity: low-pass the waveform along its length in BOTH directions
           // (symmetric, so peaks round off without dragging sideways), then
@@ -1314,11 +1345,11 @@
       else if (e.key === "ArrowUp") { e.preventDefault(); nudge(reactInput, 0.05); }
       else if (e.key === "ArrowDown") { e.preventDefault(); nudge(reactInput, -0.05); }
       else {
-        // Keys 1–0 and Q W E R pick a shape; the line morphs to it fluidly.
+        // Keys 1–0 and Q W E R T Y U I pick a shape; the line morphs fluidly.
         const k = e.key.toLowerCase();
         let idx = "1234567890".indexOf(e.key);
         if (idx === -1) {
-          const qi = "qwer".indexOf(k);
+          const qi = "qwertyui".indexOf(k);
           if (qi !== -1) idx = 10 + qi;
         }
         if (idx !== -1 && idx !== formB) {
